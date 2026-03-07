@@ -1,0 +1,5 @@
+comment = 'AlohaDB Chart - SVG chart generation from SQL queries'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_chart'
+schema = public
+relocatable = false

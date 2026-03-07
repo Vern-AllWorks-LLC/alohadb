@@ -19,7 +19,7 @@ AS 'MODULE_PATHNAME', 'audit_log_status'
 LANGUAGE C STABLE;
 
 -- New: decrypt + redact function
-CREATE FUNCTION audit_decrypt_log(
+CREATE OR REPLACE FUNCTION audit_decrypt_log(
     line text,
     key text,
     redact boolean DEFAULT true

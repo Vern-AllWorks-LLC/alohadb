@@ -19,7 +19,7 @@ alohadb_learned_stats = shared_module('alohadb_learned_stats',
 contrib_targets += alohadb_learned_stats
 
 install_data(
-  'learned_stats.control',
-  'learned_stats--1.0.sql',
+  'alohadb_learned_stats.control',
+  'alohadb_learned_stats--1.0.sql',
   kwargs: contrib_data_args,
 )
