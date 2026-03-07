@@ -1,0 +1,4 @@
+comment = 'Federated learning with Flower framework integration'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_federated'
+relocatable = true

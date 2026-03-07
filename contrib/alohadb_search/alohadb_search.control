@@ -1,0 +1,5 @@
+comment = 'AlohaDB Search - BM25, fuzzy matching, phonetic search, geo search'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_search'
+schema = public
+relocatable = false

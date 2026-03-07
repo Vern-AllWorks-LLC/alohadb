@@ -1,0 +1,4 @@
+comment = 'AlohaDB Query Store and Index Advisor'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_query_store'
+relocatable = false

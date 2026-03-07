@@ -1,0 +1,4 @@
+comment = 'AlohaDB Analytics - Continuous Aggregates and Hyperfunctions'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_analytics'
+relocatable = false

@@ -1,0 +1,5 @@
+comment = 'AlohaDB GraphQL - Auto-generated GraphQL API from database schema'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_graphql'
+schema = public
+relocatable = false

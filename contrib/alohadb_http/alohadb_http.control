@@ -1,0 +1,5 @@
+comment = 'AlohaDB HTTP - HTTP client for PostgreSQL'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_http'
+schema = public
+relocatable = false

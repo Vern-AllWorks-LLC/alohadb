@@ -1,0 +1,4 @@
+comment = 'Automatic storage tiering for partitioned tables based on time-based rules'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_tiering'
+relocatable = false

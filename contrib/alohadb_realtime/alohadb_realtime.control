@@ -1,0 +1,4 @@
+comment = 'Trigger-based realtime change notifications with LISTEN/NOTIFY'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_realtime'
+relocatable = false

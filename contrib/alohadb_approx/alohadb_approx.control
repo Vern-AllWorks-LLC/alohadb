@@ -1,0 +1,4 @@
+comment = 'Approximate query processing: HLL, Count-Min Sketch, Top-K'
+default_version = '1.1'
+module_pathname = '$libdir/alohadb_approx'
+relocatable = true

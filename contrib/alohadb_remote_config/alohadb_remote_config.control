@@ -1,0 +1,5 @@
+# alohadb_remote_config extension
+comment = 'AlohaDB Remote Config - centralized configuration management'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_remote_config'
+relocatable = false

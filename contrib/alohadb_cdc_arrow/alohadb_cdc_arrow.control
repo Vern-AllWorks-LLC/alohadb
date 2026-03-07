@@ -1,0 +1,3 @@
+comment = 'CDC output plugin emitting Arrow IPC format'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_cdc_arrow'

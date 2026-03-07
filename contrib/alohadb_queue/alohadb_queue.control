@@ -1,0 +1,5 @@
+comment = 'AlohaDB Queue - Message queue with consumer groups'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_queue'
+schema = public
+relocatable = false

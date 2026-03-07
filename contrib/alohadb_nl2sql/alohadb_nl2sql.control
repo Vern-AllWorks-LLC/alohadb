@@ -1,0 +1,4 @@
+comment = 'Natural language to SQL translation via LLM API'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_nl2sql'
+relocatable = true

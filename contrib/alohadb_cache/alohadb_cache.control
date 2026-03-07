@@ -1,0 +1,5 @@
+comment = 'AlohaDB Cache - Shared memory key-value cache with LRU eviction'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_cache'
+schema = public
+relocatable = false

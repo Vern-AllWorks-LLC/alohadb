@@ -1,0 +1,4 @@
+comment = 'Document database API with flexible schemas for AlohaDB'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_nosql'
+relocatable = false

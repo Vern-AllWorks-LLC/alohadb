@@ -1,0 +1,4 @@
+comment = 'ML-assisted cardinality estimation using gradient-boosted trees'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_learned_stats'
+relocatable = true

@@ -1,0 +1,5 @@
+# alohadb_columnar extension
+comment = 'Columnar storage table access method with per-column zstd compression'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_columnar'
+relocatable = true

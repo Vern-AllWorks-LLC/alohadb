@@ -1,0 +1,4 @@
+comment = 'In-database ML inference using ONNX Runtime'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_inference'
+relocatable = true

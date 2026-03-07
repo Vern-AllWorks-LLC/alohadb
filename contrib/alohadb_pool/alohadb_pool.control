@@ -1,0 +1,4 @@
+comment = 'AlohaDB Built-in Connection Pooling'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_pool'
+relocatable = false

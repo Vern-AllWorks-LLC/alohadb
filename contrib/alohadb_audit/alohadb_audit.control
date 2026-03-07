@@ -1,0 +1,5 @@
+comment = 'AlohaDB Audit - DML+DDL audit logging with AES-256-GCM encryption'
+default_version = '1.1'
+module_pathname = '$libdir/alohadb_audit'
+schema = public
+relocatable = false

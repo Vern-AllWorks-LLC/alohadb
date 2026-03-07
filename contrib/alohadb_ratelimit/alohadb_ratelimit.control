@@ -1,0 +1,4 @@
+comment = 'AlohaDB Rate Limiting and Session Store'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_ratelimit'
+relocatable = false

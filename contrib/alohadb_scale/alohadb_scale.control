@@ -1,0 +1,4 @@
+comment = 'AlohaDB Scale - scale-to-zero management'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_scale'
+relocatable = true

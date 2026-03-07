@@ -1,0 +1,4 @@
+comment = 'GPU-offloaded vector operations: batch distance, top-K, matrix multiply'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_gpu'
+relocatable = true

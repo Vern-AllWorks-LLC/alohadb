@@ -1,0 +1,19 @@
+AlohaDB 20.0 - AI-Native PostgreSQL
+
+Copyright (c) 2025-2026, OpenCAN / AlohaDB Project
+
+This software is based on PostgreSQL 18, which is licensed under the
+PostgreSQL License (a permissive BSD-style license). The original
+PostgreSQL license can be found in the COPYRIGHT file.
+
+AlohaDB extensions and modifications (contrib/alohadb_*, and all
+AlohaDB-specific source modifications) are licensed under the MIT
+License. See the LICENSE file for details.
+
+PostgreSQL Database Management System
+(formerly known as Postgres, Postgres95)
+
+Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+Portions Copyright (c) 1994, The Regents of the University of California
+
+See the COPYRIGHT file for the full PostgreSQL license text.

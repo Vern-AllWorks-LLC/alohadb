@@ -1,0 +1,4 @@
+comment = 'Auto-partition management for time-series tables using a background worker'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_timeseries'
+relocatable = false

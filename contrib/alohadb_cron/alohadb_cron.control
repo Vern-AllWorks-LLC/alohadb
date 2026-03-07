@@ -1,0 +1,4 @@
+comment = 'Job scheduling with cron syntax for AlohaDB'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_cron'
+relocatable = false

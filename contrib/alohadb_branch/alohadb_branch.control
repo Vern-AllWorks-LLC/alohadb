@@ -1,0 +1,6 @@
+comment = 'Lightweight database branching for testing migrations and experiments'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_branch'
+relocatable = false
+schema = public
+superuser = true

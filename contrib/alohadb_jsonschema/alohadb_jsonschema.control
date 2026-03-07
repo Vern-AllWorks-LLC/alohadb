@@ -1,0 +1,4 @@
+comment = 'JSON Schema Draft-07 validation for AlohaDB'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_jsonschema'
+relocatable = false

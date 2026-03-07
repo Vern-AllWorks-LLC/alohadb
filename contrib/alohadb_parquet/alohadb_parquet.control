@@ -1,0 +1,4 @@
+comment = 'AlohaDB Parquet, CSV, and JSON file reader'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_parquet'
+relocatable = false

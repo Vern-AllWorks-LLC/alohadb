@@ -1,0 +1,5 @@
+comment = 'Encrypted secrets store using pgcrypto for AlohaDB'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_vault'
+requires = 'pgcrypto'
+relocatable = false
