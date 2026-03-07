@@ -17,7 +17,7 @@ Building from Source
     ninja -C builddir -j$(nproc)
     ninja -C builddir install
 
-For detailed documentation, see the AlohaDB User Guide or the
+For detailed documentation, see the AlohaDB User Guide at <https://www.opencan.ai/alohadb-guide.html> or the
 PostgreSQL documentation at <https://www.postgresql.org/docs/18/>.
 
 For more information visit <https://opencan.ai/>.
