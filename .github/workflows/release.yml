@@ -114,6 +114,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
           ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.tar.gz"
           tar -czf "$ARCHIVE" -C stage .
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       # ---- Build: Windows (MSYS2 shell) -------------------------------------
@@ -139,6 +140,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
           ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.zip"
           cd stage && zip -r "../$ARCHIVE" . && cd ..
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
       # ---- Upload to GitHub Release -----------------------------------------
@@ -146,5 +148,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name || github.event.inputs.tag }}
-          files: ${{ env.ARCHIVE }}
+          files: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
           generate_release_notes: true
