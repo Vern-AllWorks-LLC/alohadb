@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# AlohaDB 20.0 Installer
+# AlohaDB 20.1 Installer
 #
 # Interactive installer that:
 #   - Checks CPU, RAM, disk space prerequisites
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # ---- Constants -------------------------------------------------------------
-ALOHADB_VERSION="20.0"
+ALOHADB_VERSION="20.1"
 MIN_CPUS=2
 MIN_RAM_MB=1024
 MIN_DISK_MB=2048

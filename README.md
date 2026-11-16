@@ -699,7 +699,7 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 
 ## Release notes
 
-### November 2026
+### 20.1.0 — November 2026
 
 - Based on PostgreSQL **18.7** (from 18.3). Same on-disk format: existing clusters run on the new binaries without `al_upgrade`. `output_plugin_libraries` (new in 18.7) defaults to `pgoutput, test_decoding, alohadb_cdc_arrow`.
 - Tooling fixed for AlohaDB's file names: base backups no longer copy `alohadb.pid`; `al_basebackup -R` writes standby settings to `alohadb.auto.conf`; `al_resetwal` detects a running server; `al_dumpall`, `al_verifybackup`, `al_ctl initdb`, `al_createsubscriber` and `al_upgrade` find their helper programs without workarounds.
