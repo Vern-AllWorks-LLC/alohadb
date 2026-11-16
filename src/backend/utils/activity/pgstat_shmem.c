@@ -142,8 +142,7 @@ StatsShmemSize(void)
 			continue;
 
 		Assert(kind_info->shared_size != 0);
-
-		sz += MAXALIGN(kind_info->shared_size);
+		sz = add_size(sz, MAXALIGN(kind_info->shared_size));
 	}
 
 	return sz;
@@ -227,7 +226,8 @@ StatsShmemInit(void)
 				int			idx = kind - PGSTAT_KIND_CUSTOM_MIN;
 
 				Assert(kind_info->shared_size != 0);
-				ctl->custom_data[idx] = ShmemAlloc(kind_info->shared_size);
+				ctl->custom_data[idx] = p;
+				p += MAXALIGN(kind_info->shared_size);
 				ptr = ctl->custom_data[idx];
 			}
 
@@ -525,9 +525,12 @@ pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64 objid, bool create,
 			if (shheader == NULL)
 			{
 				/*
-				 * Failed the allocation of a new entry, so clean up the
-				 * shared hashtable before giving up.
+				 * Failed the allocation of a new entry, so clean up both the
+				 * local reference and the shared hashtable before giving up.
+				 * Clean the local state first, since releasing the dshash
+				 * lock can process a pending interrupt.
 				 */
+				pgstat_release_entry_ref(key, entry_ref, false);
 				dshash_delete_entry(pgStatLocal.shared_hash, shhashent);
 
 				ereport(ERROR,
@@ -626,39 +629,25 @@ pgstat_release_entry_ref(PgStat_HashKey key, PgStat_EntryRef *entry_ref,
 			PgStatShared_HashEntry *shent;
 
 			/*
-			 * We're the last referrer to this entry, try to drop the shared
-			 * entry.
+			 * We're the last referrer.  Before we get the lock, the entry may
+			 * have been reinitialized, or freed and created again, so look it
+			 * up by key.  If it is gone, it got already dropped and freed.
 			 */
+			shent = dshash_find(pgStatLocal.shared_hash, &key, true);
 
-			/* only dropped entries can reach a 0 refcount */
-			Assert(entry_ref->shared_entry->dropped);
-
-			shent = dshash_find(pgStatLocal.shared_hash,
-								&entry_ref->shared_entry->key,
-								true);
-			if (!shent)
-				elog(ERROR, "could not find just referenced shared stats entry");
-
-			/*
-			 * This entry may have been reinitialized while trying to release
-			 * it, so double-check that it has not been reused while holding a
-			 * lock on its shared entry.
-			 */
-			if (pg_atomic_read_u32(&entry_ref->shared_entry->generation) ==
-				entry_ref->generation)
+			if (shent)
 			{
-				/* Same "generation", so we're OK with the removal */
-				Assert(pg_atomic_read_u32(&entry_ref->shared_entry->refcount) == 0);
-				Assert(entry_ref->shared_entry == shent);
-				pgstat_free_entry(shent, NULL);
-			}
-			else
-			{
-				/*
-				 * Shared stats entry has been reinitialized, so do not drop
-				 * its shared entry, only release its lock.
-				 */
-				dshash_release_lock(pgStatLocal.shared_hash, shent);
+				if (shent->dropped &&
+					pg_atomic_read_u32(&shent->refcount) == 0)
+				{
+					/* Entry dropped and unreferenced, so free it. */
+					pgstat_free_entry(shent, NULL);
+				}
+				else
+				{
+					/* Entry reinitialized or created again, still in use. */
+					dshash_release_lock(pgStatLocal.shared_hash, shent);
+				}
 			}
 		}
 	}
@@ -776,6 +765,15 @@ pgstat_gc_entry_refs(void)
 		Assert(!entry_ref->shared_stats ||
 			   entry_ref->shared_stats->magic == 0xdeadbeef);
 
+		/* A NULL shared_entry marks a partial reference. */
+		if (entry_ref->shared_entry == NULL)
+		{
+			Assert(entry_ref->shared_stats == NULL);
+			Assert(entry_ref->pending == NULL);
+			pgstat_release_entry_ref(ent->key, entry_ref, false);
+			continue;
+		}
+
 		/*
 		 * "generation" checks for the case of entries being reinitialized,
 		 * and "dropped" for the case where these are..  dropped.
@@ -880,7 +878,7 @@ pgstat_free_entry(PgStatShared_HashEntry *shent, dshash_seq_status *hstat)
 
 /*
  * Helper for both pgstat_drop_database_and_contents() and
- * pgstat_drop_entry(). If hstat is non-null delete the shared entry using
+ * pgstat_drop_entry_ext(). If hstat is non-null delete the shared entry using
  * dshash_delete_current(), otherwise use dshash_delete_entry(). In either
  * case the entry needs to be already locked.
  */
@@ -898,14 +896,7 @@ pgstat_drop_entry_internal(PgStatShared_HashEntry *shent,
 	 * Signal that the entry is dropped - this will eventually cause other
 	 * backends to release their references.
 	 */
-	if (shent->dropped)
-		elog(ERROR,
-			 "trying to drop stats entry already dropped: kind=%s dboid=%u objid=%" PRIu64 " refcount=%u generation=%u",
-			 pgstat_get_kind_info(shent->key.kind)->name,
-			 shent->key.dboid,
-			 shent->key.objid,
-			 pg_atomic_read_u32(&shent->refcount),
-			 pg_atomic_read_u32(&shent->generation));
+	Assert(!shent->dropped);
 	shent->dropped = true;
 
 	/* release refcount marking entry as not dropped */
@@ -976,10 +967,23 @@ pgstat_drop_database_and_contents(Oid dboid)
 }
 
 /*
+ * ABI-preserving wrapper around pgstat_drop_entry_ext().
+ *
+ * The original routine introduced in v15 did not include "missing_ok".
+ */
+bool
+pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
+{
+	return pgstat_drop_entry_ext(kind, dboid, objid, false);
+}
+
+/*
  * Drop a single stats entry.
  *
  * This routine returns false if the stats entry of the dropped object could
  * not be freed, true otherwise.
+ *
+ * If missing_ok is true, skip entries that have been concurrently dropped.
  *
  * The callers of this function should call pgstat_request_entry_refs_gc()
  * if the stats entry could not be freed, to ensure that this entry's memory
@@ -987,7 +991,8 @@ pgstat_drop_database_and_contents(Oid dboid)
  * pgstat_gc_entry_refs().
  */
 bool
-pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
+pgstat_drop_entry_ext(PgStat_Kind kind, Oid dboid, uint64 objid,
+					  bool missing_ok)
 {
 	PgStat_HashKey key;
 	PgStatShared_HashEntry *shent;
@@ -1015,6 +1020,20 @@ pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
 	shent = dshash_find(pgStatLocal.shared_hash, &key, true);
 	if (shent)
 	{
+		if (shent->dropped)
+		{
+			if (!missing_ok)
+				elog(ERROR,
+					 "trying to drop stats entry already dropped: kind=%s dboid=%u objid=%" PRIu64 " refcount=%u generation=%u",
+					 pgstat_get_kind_info(shent->key.kind)->name,
+					 shent->key.dboid,
+					 shent->key.objid,
+					 pg_atomic_read_u32(&shent->refcount),
+					 pg_atomic_read_u32(&shent->generation));
+			dshash_release_lock(pgStatLocal.shared_hash, shent);
+			return true;
+		}
+
 		freed = pgstat_drop_entry_internal(shent, NULL);
 
 		/*

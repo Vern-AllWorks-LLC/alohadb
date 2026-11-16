@@ -42,6 +42,7 @@
 #include "pg_backup_archiver.h"
 #include "pg_backup_db.h"
 #include "pg_backup_utils.h"
+#include "pgtar.h"
 
 #define TEXT_DUMP_HEADER "--\n-- PostgreSQL database dump\n--\n\n"
 #define TEXT_DUMPALL_HEADER "--\n-- PostgreSQL database cluster dump\n--\n\n"
@@ -1988,8 +1989,8 @@ buildTocEntryArrays(ArchiveHandle *AH)
 	DumpId		maxDumpId = AH->maxDumpId;
 	TocEntry   *te;
 
-	AH->tocsByDumpId = (TocEntry **) pg_malloc0((maxDumpId + 1) * sizeof(TocEntry *));
-	AH->tableDataId = (DumpId *) pg_malloc0((maxDumpId + 1) * sizeof(DumpId));
+	AH->tocsByDumpId = pg_malloc0_array(TocEntry *, (maxDumpId + 1));
+	AH->tableDataId = pg_malloc0_array(DumpId, (maxDumpId + 1));
 
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
 	{
@@ -2349,7 +2350,7 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 		}
 
 		if (!isValidTarHeader(AH->lookahead))
-			pg_fatal("input file does not appear to be a valid archive");
+			pg_fatal("input file does not appear to be a valid tar archive");
 
 		AH->format = archTar;
 	}
@@ -2828,7 +2829,20 @@ ReadToc(ArchiveHandle *AH)
 					depSize *= 2;
 					deps = (DumpId *) pg_realloc(deps, sizeof(DumpId) * depSize);
 				}
-				sscanf(tmp, "%d", &deps[depIdx]);
+
+				/*
+				 * Sanity check.  Dependencies are used as subscripts into
+				 * arrays indexed by dump ID, so we can't let a corrupt TOC
+				 * hand us a value that isn't a valid dump ID.  Pre-8.0
+				 * archives record OIDs here instead, which needn't fit in a
+				 * DumpId.  Those are only ever used with bounds checks, since
+				 * such archives can't be restored in parallel, so leave them
+				 * be.
+				 */
+				if (sscanf(tmp, "%d", &deps[depIdx]) != 1 ||
+					(AH->version >= K_VERS_1_8 && deps[depIdx] <= 0))
+					pg_fatal("dependency ID \"%s\" out of range -- perhaps a corrupt TOC",
+							 tmp);
 				free(tmp);
 				depIdx++;
 			}
@@ -3082,7 +3096,9 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	}
 
 	/* If it's a subscription, maybe ignore it */
-	if (ropt->no_subscriptions && strcmp(te->desc, "SUBSCRIPTION") == 0)
+	if (ropt->no_subscriptions &&
+		(strcmp(te->desc, "SUBSCRIPTION") == 0 ||
+		 strcmp(te->desc, "SUBSCRIPTION TABLE") == 0))
 		return 0;
 
 	/* Ignore it if section is not to be dumped/restored */
@@ -3114,7 +3130,6 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	 */
 	if (strcmp(te->desc, "ACL") == 0 ||
 		strcmp(te->desc, "COMMENT") == 0 ||
-		strcmp(te->desc, "STATISTICS DATA") == 0 ||
 		strcmp(te->desc, "SECURITY LABEL") == 0)
 	{
 		/* Database properties react to createDB, not selectivity options. */
@@ -3185,14 +3200,52 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 
 		if (ropt->selTypes)
 		{
-			if (strcmp(te->desc, "TABLE") == 0 ||
-				strcmp(te->desc, "TABLE DATA") == 0 ||
-				strcmp(te->desc, "VIEW") == 0 ||
-				strcmp(te->desc, "FOREIGN TABLE") == 0 ||
-				strcmp(te->desc, "MATERIALIZED VIEW") == 0 ||
-				strcmp(te->desc, "MATERIALIZED VIEW DATA") == 0 ||
-				strcmp(te->desc, "SEQUENCE") == 0 ||
-				strcmp(te->desc, "SEQUENCE SET") == 0)
+			if (strcmp(te->desc, "STATISTICS DATA") == 0)
+			{
+				bool		dumpthis = false;
+
+				/*
+				 * Statistics data entries can be for tables or indexes. Check
+				 * the parent dependency to determine which type this entry
+				 * belongs to, then apply the appropriate name filter.
+				 */
+				for (int i = 0; i < te->nDeps; i++)
+				{
+					TocEntry   *pte = getTocEntryByDumpId(AH, te->dependencies[i]);
+
+					if (!pte)
+						continue;
+
+					if (ropt->selTable &&
+						(strcmp(pte->desc, "TABLE") == 0 ||
+						 strcmp(pte->desc, "VIEW") == 0 ||
+						 strcmp(pte->desc, "FOREIGN TABLE") == 0 ||
+						 strcmp(pte->desc, "MATERIALIZED VIEW") == 0))
+					{
+						if (ropt->tableNames.head == NULL ||
+							simple_string_list_member(&ropt->tableNames, pte->tag))
+							dumpthis = true;
+					}
+
+					if (ropt->selIndex &&
+						strcmp(pte->desc, "INDEX") == 0)
+					{
+						if (ropt->indexNames.head == NULL ||
+							simple_string_list_member(&ropt->indexNames, pte->tag))
+							dumpthis = true;
+					}
+				}
+				if (!dumpthis)
+					return 0;
+			}
+			else if (strcmp(te->desc, "TABLE") == 0 ||
+					 strcmp(te->desc, "TABLE DATA") == 0 ||
+					 strcmp(te->desc, "VIEW") == 0 ||
+					 strcmp(te->desc, "FOREIGN TABLE") == 0 ||
+					 strcmp(te->desc, "MATERIALIZED VIEW") == 0 ||
+					 strcmp(te->desc, "MATERIALIZED VIEW DATA") == 0 ||
+					 strcmp(te->desc, "SEQUENCE") == 0 ||
+					 strcmp(te->desc, "SEQUENCE SET") == 0)
 			{
 				if (!ropt->selTable)
 					return 0;
@@ -3500,14 +3553,16 @@ _reconnectToDB(ArchiveHandle *AH, const char *dbname)
 		 * Anything added between this line and the following \restrict must
 		 * be careful to avoid any possible meta-command injection vectors.
 		 */
-		ahprintf(AH, "\\unrestrict %s\n", ropt->restrict_key);
+		if (ropt->restrict_key)
+			ahprintf(AH, "\\unrestrict %s\n", ropt->restrict_key);
 
 		initPQExpBuffer(&connectbuf);
 		appendPsqlMetaConnect(&connectbuf, dbname);
 		ahprintf(AH, "%s", connectbuf.data);
 		termPQExpBuffer(&connectbuf);
 
-		ahprintf(AH, "\\restrict %s\n\n", ropt->restrict_key);
+		if (ropt->restrict_key)
+			ahprintf(AH, "\\restrict %s\n\n", ropt->restrict_key);
 	}
 
 	/*
@@ -3834,9 +3889,15 @@ _getObjectDescription(PQExpBuffer buf, const TocEntry *te)
 			 strcmp(type, "OPERATOR FAMILY") == 0 ||
 			 strcmp(type, "PROCEDURE") == 0)
 	{
-		/* Chop "DROP " off the front and make a modifiable copy */
-		char	   *first = pg_strdup(te->dropStmt + 5);
+		char	   *first;
 		char	   *last;
+
+		if (strncmp(te->dropStmt, "DROP ", 5) != 0)
+			pg_fatal("unexpected DROP statement for object type \"%s\" -- perhaps a corrupt TOC",
+					 type);
+
+		/* Chop "DROP " off the front and make a modifiable copy */
+		first = pg_strdup(te->dropStmt + 5);
 
 		/* point to last character in string */
 		last = first + strlen(first) - 1;

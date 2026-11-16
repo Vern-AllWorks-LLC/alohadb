@@ -94,6 +94,20 @@ typedef struct
 	List	   *safe_param_ids; /* PARAM_EXEC Param IDs to treat as safe */
 } max_parallel_hazard_context;
 
+/*
+ * Walker context for expression_has_grouping_conflict.  get_eqop is a callback
+ * that returns the equality operator used for grouping.  cb_context is opaque
+ * to the walker and is forwarded to get_eqop unchanged.  case_var is the Var
+ * that the CaseTestExprs of the simple CASE being walked stand for, or NULL if
+ * there is none.
+ */
+typedef struct
+{
+	grouping_eqop_callback get_eqop;
+	void	   *cb_context;
+	Var		   *case_var;
+} grouping_walker_ctx;
+
 static bool contain_agg_clause_walker(Node *node, void *context);
 static bool find_window_functions_walker(Node *node, WindowFuncLists *lists);
 static bool contain_subplans_walker(Node *node, void *context);
@@ -111,6 +125,11 @@ static Relids find_nonnullable_rels_walker(Node *node, bool top_level);
 static List *find_nonnullable_vars_walker(Node *node, bool top_level);
 static bool is_strict_saop(ScalarArrayOpExpr *expr, bool falseOK);
 static bool convert_saop_to_hashed_saop_walker(Node *node, void *context);
+static bool grouping_conflict_walker(Node *node, grouping_walker_ctx *ctx);
+static bool grouping_check_operands(Oid opno, Oid inputcollid,
+									List *args, grouping_walker_ctx *ctx);
+static bool grouping_check_operand(Node *arg, Oid opno, Oid inputcollid,
+								   grouping_walker_ctx *ctx);
 static Node *eval_const_expressions_mutator(Node *node,
 											eval_const_expressions_context *context);
 static bool contain_non_const_walker(Node *node, void *context);
@@ -1009,7 +1028,7 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		/* an aggregate could return non-null with null input */
 		return true;
 	}
-	if (IsA(node, GroupingFunc))
+	else if (IsA(node, GroupingFunc))
 	{
 		/*
 		 * A GroupingFunc doesn't evaluate its arguments, and therefore must
@@ -1017,12 +1036,12 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		 */
 		return true;
 	}
-	if (IsA(node, WindowFunc))
+	else if (IsA(node, WindowFunc))
 	{
 		/* a window function could return non-null with null input */
 		return true;
 	}
-	if (IsA(node, SubscriptingRef))
+	else if (IsA(node, SubscriptingRef))
 	{
 		SubscriptingRef *sbsref = (SubscriptingRef *) node;
 		const SubscriptRoutines *sbsroutines;
@@ -1036,17 +1055,25 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 			return true;
 		/* else fall through to check args */
 	}
-	if (IsA(node, DistinctExpr))
+	else if (IsA(node, DistinctExpr))
 	{
 		/* IS DISTINCT FROM is inherently non-strict */
 		return true;
 	}
-	if (IsA(node, NullIfExpr))
+	else if (IsA(node, NullIfExpr))
 	{
 		/* NULLIF is inherently non-strict */
 		return true;
 	}
-	if (IsA(node, BoolExpr))
+	else if (IsA(node, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) node;
+
+		if (!is_strict_saop(expr, false))
+			return true;
+		/* else fall through to check args */
+	}
+	else if (IsA(node, BoolExpr))
 	{
 		BoolExpr   *expr = (BoolExpr *) node;
 
@@ -1060,28 +1087,26 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 				break;
 		}
 	}
-	if (IsA(node, SubLink))
+	else if (IsA(node, SubLink))
 	{
 		/* In some cases a sublink might be strict, but in general not */
 		return true;
 	}
-	if (IsA(node, SubPlan))
+	else if (IsA(node, SubPlan))
 		return true;
-	if (IsA(node, AlternativeSubPlan))
+	else if (IsA(node, AlternativeSubPlan))
 		return true;
-	if (IsA(node, FieldStore))
+	else if (IsA(node, FieldStore))
 		return true;
-	if (IsA(node, CoerceViaIO))
+	else if (IsA(node, CoerceViaIO))
 	{
 		/*
 		 * CoerceViaIO is strict regardless of whether the I/O functions are,
-		 * so just go look at its argument; asking check_functions_in_node is
-		 * useless expense and could deliver the wrong answer.
+		 * so we should skip check_functions_in_node() and just fall through
+		 * to check the arguments.
 		 */
-		return contain_nonstrict_functions_walker((Node *) ((CoerceViaIO *) node)->arg,
-												  context);
 	}
-	if (IsA(node, ArrayCoerceExpr))
+	else if (IsA(node, ArrayCoerceExpr))
 	{
 		/*
 		 * ArrayCoerceExpr is strict at the array level, regardless of what
@@ -1091,31 +1116,33 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return contain_nonstrict_functions_walker((Node *) ((ArrayCoerceExpr *) node)->arg,
 												  context);
 	}
-	if (IsA(node, CaseExpr))
+	else if (IsA(node, CaseExpr))
 		return true;
-	if (IsA(node, ArrayExpr))
+	else if (IsA(node, ArrayExpr))
 		return true;
-	if (IsA(node, RowExpr))
+	else if (IsA(node, RowExpr))
 		return true;
-	if (IsA(node, RowCompareExpr))
+	else if (IsA(node, RowCompareExpr))
 		return true;
-	if (IsA(node, CoalesceExpr))
+	else if (IsA(node, CoalesceExpr))
 		return true;
-	if (IsA(node, MinMaxExpr))
+	else if (IsA(node, MinMaxExpr))
 		return true;
-	if (IsA(node, XmlExpr))
+	else if (IsA(node, XmlExpr))
 		return true;
-	if (IsA(node, NullTest))
+	else if (IsA(node, NullTest))
 		return true;
-	if (IsA(node, BooleanTest))
+	else if (IsA(node, BooleanTest))
 		return true;
-	if (IsA(node, JsonConstructorExpr))
+	else if (IsA(node, JsonConstructorExpr))
 		return true;
-
-	/* Check other function-containing nodes */
-	if (check_functions_in_node(node, contain_nonstrict_functions_checker,
-								context))
-		return true;
+	else
+	{
+		/* Check other function-containing nodes */
+		if (check_functions_in_node(node, contain_nonstrict_functions_checker,
+									context))
+			return true;
+	}
 
 	return expression_tree_walker(node, contain_nonstrict_functions_walker,
 								  context);
@@ -1258,6 +1285,11 @@ contain_context_dependent_node_walker(Node *node, int *flags)
  * passed Var nodes of the current query level, and which might therefore leak
  * data.  Such clauses must be applied after any lower-level security barrier
  * clauses.
+ *
+ * We might find a leaky function that is passed a CaseTestExpr or internal
+ * Param.  Those cases are dangerous since the CaseTestExpr or Param might
+ * represent the value of a Var.  We do not go to the trouble of figuring
+ * out whether it actually does; we just deem the clause leaky.
  */
 bool
 contain_leaked_vars(Node *clause)
@@ -1314,12 +1346,12 @@ contain_leaked_vars_walker(Node *node, void *context)
 		case T_ArrayCoerceExpr:
 
 			/*
-			 * If node contains a leaky function call, and there's any Var
-			 * underneath it, reject.
+			 * If node contains a leaky function call, and there's any Var or
+			 * Var-representative node underneath it, reject.
 			 */
 			if (check_functions_in_node(node, contain_leaked_vars_checker,
 										context) &&
-				contain_var_clause(node))
+				contain_var_or_representative(node))
 				return true;
 			break;
 
@@ -1337,7 +1369,7 @@ contain_leaked_vars_walker(Node *node, void *context)
 					  sbsroutines->fetch_leakproof))
 				{
 					/* Node is leaky, so reject if it contains Vars */
-					if (contain_var_clause(node))
+					if (contain_var_or_representative(node))
 						return true;
 				}
 			}
@@ -1362,8 +1394,8 @@ contain_leaked_vars_walker(Node *node, void *context)
 					Oid			funcid = get_opcode(lfirst_oid(opid));
 
 					if (!get_func_leakproof(funcid) &&
-						(contain_var_clause((Node *) lfirst(larg)) ||
-						 contain_var_clause((Node *) lfirst(rarg))))
+						(contain_var_or_representative((Node *) lfirst(larg)) ||
+						 contain_var_or_representative((Node *) lfirst(rarg))))
 						return true;
 				}
 			}
@@ -1394,7 +1426,7 @@ contain_leaked_vars_walker(Node *node, void *context)
 				}
 
 				if (!leakproof &&
-					contain_var_clause((Node *) minmaxexpr->args))
+					contain_var_or_representative((Node *) minmaxexpr->args))
 					return true;
 			}
 			break;
@@ -1511,7 +1543,7 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
 	{
 		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) node;
 
-		if (is_strict_saop(expr, true))
+		if (is_strict_saop(expr, top_level))
 			result = find_nonnullable_rels_walker((Node *) expr->args, false);
 	}
 	else if (IsA(node, BoolExpr))
@@ -1764,7 +1796,7 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 	{
 		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) node;
 
-		if (is_strict_saop(expr, true))
+		if (is_strict_saop(expr, top_level))
 			result = find_nonnullable_vars_walker((Node *) expr->args, false);
 	}
 	else if (IsA(node, BoolExpr))
@@ -1968,11 +2000,12 @@ find_forced_null_vars(Node *node)
  *		*only* nullness of the particular Var, not any other conditions.
  *
  * This is just the single-clause case of find_forced_null_vars(), without
- * any allowance for AND conditions.  It's used by initsplan.c on individual
- * qual clauses.  The reason for not just applying find_forced_null_vars()
- * is that if an AND of an IS NULL clause with something else were to somehow
- * survive AND/OR flattening, initsplan.c might get fooled into discarding
- * the whole clause when only the IS NULL part of it had been proved redundant.
+ * any allowance for AND conditions.  It's used by prepjointree.c on
+ * individual qual clauses.  The reason for not just applying
+ * find_forced_null_vars() is that if an AND of an IS NULL clause with
+ * something else were to somehow survive AND/OR flattening, prepjointree.c
+ * might get fooled into discarding the whole clause when only the IS NULL
+ * part of it had been proved redundant.
  */
 Var *
 find_forced_null_var(Node *node)
@@ -2299,7 +2332,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 	if (IsA(node, ScalarArrayOpExpr))
 	{
 		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
-		Expr	   *arrayarg = (Expr *) lsecond(saop->args);
+		Node	   *leftarg = (Node *) linitial(saop->args);
+		Node	   *arrayarg = (Node *) lsecond(saop->args);
 		Oid			lefthashfunc;
 		Oid			righthashfunc;
 
@@ -2308,7 +2342,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 		{
 			if (saop->useOr)
 			{
-				if (get_op_hash_functions(saop->opno, &lefthashfunc, &righthashfunc) &&
+				if (get_op_hash_functions_ext(saop->opno, exprType(leftarg),
+											  &lefthashfunc, &righthashfunc) &&
 					lefthashfunc == righthashfunc)
 				{
 					Datum		arrdatum = ((Const *) arrayarg)->constvalue;
@@ -2340,7 +2375,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 				 * just ensure the lookup items are not in the hash table.
 				 */
 				if (OidIsValid(negator) &&
-					get_op_hash_functions(negator, &lefthashfunc, &righthashfunc) &&
+					get_op_hash_functions_ext(negator, exprType(leftarg),
+											  &lefthashfunc, &righthashfunc) &&
 					lefthashfunc == righthashfunc)
 				{
 					Datum		arrdatum = ((Const *) arrayarg)->constvalue;
@@ -2912,7 +2948,6 @@ eval_const_expressions_mutator(Node *node,
 				}
 				break;
 			}
-
 		case T_JsonValueExpr:
 			{
 				JsonValueExpr *jve = (JsonValueExpr *) node;
@@ -2936,15 +2971,48 @@ eval_const_expressions_mutator(Node *node,
 												  (Expr *) formatted_expr,
 												  copyObject(jve->format));
 			}
+		case T_JsonConstructorExpr:
+			{
+				JsonConstructorExpr *jce = (JsonConstructorExpr *) node;
+				JsonConstructorExpr *newjce;
+				Node	   *save_case_val;
 
+				/*
+				 * Copy the node and const-simplify its arguments.  We can't
+				 * use ece_generic_processing() here because we need to mess
+				 * with case_val only while processing the coercion.
+				 */
+				newjce = makeNode(JsonConstructorExpr);
+				memcpy(newjce, jce, sizeof(JsonConstructorExpr));
+				newjce->args = (List *)
+					eval_const_expressions_mutator((Node *) jce->args,
+												   context);
+				newjce->func = (Expr *)
+					eval_const_expressions_mutator((Node *) jce->func,
+												   context);
+
+				/*
+				 * Set up for the CaseTestExpr node contained in the coercion.
+				 * We must prevent it from absorbing any outer CASE value.
+				 */
+				save_case_val = context->case_val;
+				context->case_val = NULL;
+
+				newjce->coercion = (Expr *)
+					eval_const_expressions_mutator((Node *) jce->coercion,
+												   context);
+
+				context->case_val = save_case_val;
+
+				return (Node *) newjce;
+			}
 		case T_SubPlan:
 		case T_AlternativeSubPlan:
 
 			/*
 			 * Return a SubPlan unchanged --- too late to do anything with it.
-			 *
-			 * XXX should we ereport() here instead?  Probably this routine
-			 * should never be invoked after SubPlan creation.
+			 * This can happen in estimation mode, which runs after SubPlans
+			 * have been created.
 			 */
 			return node;
 		case T_RelabelType:
@@ -3650,20 +3718,28 @@ eval_const_expressions_mutator(Node *node,
 				return (Node *) newcdomain;
 			}
 		case T_PlaceHolderVar:
-
-			/*
-			 * In estimation mode, just strip the PlaceHolderVar node
-			 * altogether; this amounts to estimating that the contained value
-			 * won't be forced to null by an outer join.  In regular mode we
-			 * just use the default behavior (ie, simplify the expression but
-			 * leave the PlaceHolderVar node intact).
-			 */
-			if (context->estimate)
 			{
 				PlaceHolderVar *phv = (PlaceHolderVar *) node;
 
-				return eval_const_expressions_mutator((Node *) phv->phexpr,
-													  context);
+				/*
+				 * Leave a PHV of an upper query level alone: its expression
+				 * belongs to that level, which has already preprocessed it.
+				 * But we do copy the subtree, just to conform to this
+				 * function's API spec.
+				 */
+				if (phv->phlevelsup > 0)
+					return copyObject(node);
+
+				/*
+				 * In estimation mode, just strip the PlaceHolderVar node
+				 * altogether; this amounts to estimating that the contained
+				 * value won't be forced to null by an outer join.  In regular
+				 * mode we just use the default behavior (ie, simplify the
+				 * expression but leave the PlaceHolderVar node intact).
+				 */
+				if (context->estimate)
+					return eval_const_expressions_mutator((Node *) phv->phexpr,
+														  context);
 			}
 			break;
 		case T_ConvertRowtypeExpr:
@@ -4386,7 +4462,7 @@ recheck_cast_function_args(List *args, Oid result_type,
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
 	int			nargs;
-	Oid			actual_arg_types[FUNC_MAX_ARGS];
+	Oid			actual_arg_types[FUNC_MAX_ARGS] = {0};
 	Oid			declared_arg_types[FUNC_MAX_ARGS];
 	Oid			rettype;
 	ListCell   *lc;
@@ -5414,7 +5490,8 @@ substitute_actual_srf_parameters_mutator(Node *node,
 
 /*
  * pull_paramids
- *		Returns a Bitmapset containing the paramids of all Params in 'expr'.
+ *		Returns a Bitmapset containing the paramids of all PARAM_EXEC Params
+ *		in 'expr'.
  */
 Bitmapset *
 pull_paramids(Expr *expr)
@@ -5435,10 +5512,305 @@ pull_paramids_walker(Node *node, Bitmapset **context)
 	{
 		Param	   *param = (Param *) node;
 
-		*context = bms_add_member(*context, param->paramid);
+		if (param->paramkind == PARAM_EXEC)
+			*context = bms_add_member(*context, param->paramid);
 		return false;
 	}
 	return expression_tree_walker(node, pull_paramids_walker, context);
+}
+
+/*
+ * expression_has_grouping_conflict
+ *	  Detect whether 'expr' would distinguish rows that a grouping mechanism
+ *	  (GROUP BY, DISTINCT, DISTINCT ON, window PARTITION BY, or set operation)
+ *	  considers equal.
+ *
+ * The caller supplies a get_eqop callback (see clauses.h) so the same walker
+ * serves every grouping context.  The callback identifies a grouping column by
+ * returning a valid eqop for its Var.  A grouping column is safe to reference
+ * only if the reference yields the same result for every value the grouping
+ * treats as equal.  Otherwise, pushing the clause past the grouping could
+ * discard rows that the grouping would have combined into a single group.
+ *
+ * The reference is provably safe only when the grouping column is a direct
+ * operand of a comparison that tests the grouping's own equality.  Such an
+ * operand is rejected when the comparison's operator does not have equality
+ * semantics compatible with the grouping eqop, or, for a nondeterministic
+ * collation, when the comparison applies a collation other than the column's.
+ *
+ * For a nondeterministic collation, every other reference is rejected: a
+ * comparison under a different collation, and any function or operator over
+ * the column, because we cannot tell whether the function yields the same
+ * result for values the grouping treats as equal, and many do not.  A column
+ * with a deterministic collation is not restricted this way.
+ *
+ * This leaves one case uncaught: with a deterministic collation, a function
+ * over the column can still feed a finer comparison than the direct-operand
+ * check sees, for example record_image_ops over a rebuilt record, or scale()
+ * over numeric where two equal values differ in scale.  Catching it would
+ * require knowing that a type's equality is bitwise, which we do not test
+ * here.
+ *
+ * Returns true if any such conflict exists.
+ */
+bool
+expression_has_grouping_conflict(Node *expr,
+								 grouping_eqop_callback get_eqop,
+								 void *context)
+{
+	grouping_walker_ctx ctx;
+
+	if (expr == NULL)
+		return false;
+
+	ctx.get_eqop = get_eqop;
+	ctx.cb_context = context;
+	ctx.case_var = NULL;
+
+	return grouping_conflict_walker(expr, &ctx);
+}
+
+/*
+ * Walker function for expression_has_grouping_conflict.
+ *
+ * A comparison node checks its direct operands with grouping_check_operand,
+ * which does not recurse into a grouping-column operand.  A grouping column
+ * therefore reaches the Var branch only when it is referenced in some other
+ * way: wrapped in a function or other expression, used as the whole qual (a
+ * bare boolean column), or used as an operand of an operator that is not a
+ * btree/hash member and so is not treated as a comparison here.
+ *
+ * Comparison nodes are OpExpr/ScalarArrayOpExpr whose operator is a btree/hash
+ * member, and RowCompareExpr (one operator and collation per column).  A
+ * simple CASE (CaseExpr with a non-NULL arg) is a comparison in disguise:
+ * parse analysis builds each WHEN as "OpExpr(CaseTestExpr op val)", with the
+ * CaseTestExpr standing in for the arg.  If the arg is a Var (after looking
+ * through RelabelType), it is bound in ctx->case_var while the WHEN
+ * conditions are walked and each CaseTestExpr is resolved to it, so the Var
+ * is checked exactly as each WHEN uses it.  Any other arg is walked once as
+ * a non-operand and its CaseTestExprs are ignored, as are those in an
+ * ArrayCoerceExpr's elemexpr and a JsonConstructorExpr's coercion, which
+ * stand for something else.
+ */
+static bool
+grouping_conflict_walker(Node *node, grouping_walker_ctx *ctx)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		/*
+		 * A grouping column reaches here when it was not handled as a direct
+		 * operand by a comparison node above (see the function header).  That
+		 * is safe for a deterministic collation, but not for a
+		 * nondeterministic one, where the reference may distinguish values
+		 * the grouping considers equal.  A bare boolean qual is safe too:
+		 * boolean is not collatable, so it takes the deterministic path here.
+		 */
+		if (OidIsValid(ctx->get_eqop(var, ctx->cb_context)) &&
+			OidIsValid(var->varcollid) &&
+			!get_collation_isdeterministic(var->varcollid))
+			return true;
+		return false;
+	}
+	else if (IsA(node, OpExpr))
+	{
+		OpExpr	   *opexpr = (OpExpr *) node;
+
+		if (op_is_safe_index_member(opexpr->opno))
+			return grouping_check_operands(opexpr->opno, opexpr->inputcollid,
+										   opexpr->args, ctx);
+		/* fall through */
+	}
+	else if (IsA(node, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
+
+		if (op_is_safe_index_member(saop->opno))
+			return grouping_check_operands(saop->opno, saop->inputcollid,
+										   saop->args, ctx);
+		/* fall through */
+	}
+	else if (IsA(node, RowCompareExpr))
+	{
+		RowCompareExpr *rcexpr = (RowCompareExpr *) node;
+		ListCell   *lc_l;
+		ListCell   *lc_r;
+		ListCell   *lc_o;
+		ListCell   *lc_c;
+
+		/* Each column is compared under its own operator and inputcollid. */
+		forfour(lc_l, rcexpr->largs,
+				lc_r, rcexpr->rargs,
+				lc_o, rcexpr->opnos,
+				lc_c, rcexpr->inputcollids)
+		{
+			Oid			opno = lfirst_oid(lc_o);
+			Oid			collid = lfirst_oid(lc_c);
+
+			if (grouping_check_operand((Node *) lfirst(lc_l), opno, collid, ctx) ||
+				grouping_check_operand((Node *) lfirst(lc_r), opno, collid, ctx))
+				return true;
+		}
+		return false;
+	}
+	else if (IsA(node, CaseTestExpr))
+	{
+		/*
+		 * A direct operand of a comparison is handled by
+		 * grouping_check_operand; any other use is a non-operand reference to
+		 * the Var it stands for, if any.
+		 */
+		return grouping_conflict_walker((Node *) ctx->case_var, ctx);
+	}
+	else if (IsA(node, ArrayCoerceExpr))
+	{
+		ArrayCoerceExpr *acexpr = (ArrayCoerceExpr *) node;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result;
+
+		if (grouping_conflict_walker((Node *) acexpr->arg, ctx))
+			return true;
+
+		/* The CaseTestExpr in elemexpr is an array element, not case_var. */
+		ctx->case_var = NULL;
+		result = grouping_conflict_walker((Node *) acexpr->elemexpr, ctx);
+		ctx->case_var = save_case_var;
+		return result;
+	}
+	else if (IsA(node, JsonConstructorExpr))
+	{
+		JsonConstructorExpr *ctor = (JsonConstructorExpr *) node;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result;
+
+		if (grouping_conflict_walker((Node *) ctor->args, ctx))
+			return true;
+		if (grouping_conflict_walker((Node *) ctor->func, ctx))
+			return true;
+
+		/* The CaseTestExpr in coercion is the JSON result, not case_var. */
+		ctx->case_var = NULL;
+		result = grouping_conflict_walker((Node *) ctor->coercion, ctx);
+		ctx->case_var = save_case_var;
+		return result;
+	}
+	else if (IsA(node, CaseExpr) && ((CaseExpr *) node)->arg != NULL)
+	{
+		CaseExpr   *cexpr = (CaseExpr *) node;
+		Node	   *arg = (Node *) cexpr->arg;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result = false;
+
+		/* Look through RelabelType to find a direct Var arg. */
+		while (arg && IsA(arg, RelabelType))
+			arg = (Node *) ((RelabelType *) arg)->arg;
+
+		/*
+		 * A Var arg needs no walk of its own: each WHEN condition refers to
+		 * it through a CaseTestExpr, which is resolved to the Var and checked
+		 * as the WHEN uses it.  Any other arg is a non-operand reference in
+		 * its own right: walk it once here and ignore its CaseTestExprs.
+		 */
+		if (arg && IsA(arg, Var))
+			ctx->case_var = (Var *) arg;
+		else
+		{
+			if (grouping_conflict_walker(arg, ctx))
+				return true;
+			ctx->case_var = NULL;
+		}
+		foreach_node(CaseWhen, cw, cexpr->args)
+		{
+			if (grouping_conflict_walker((Node *) cw->expr, ctx))
+			{
+				result = true;
+				break;
+			}
+		}
+		ctx->case_var = save_case_var;
+		if (result)
+			return true;
+
+		/* The results and the default result contain no CaseTestExpr. */
+		foreach_node(CaseWhen, cw, cexpr->args)
+		{
+			if (grouping_conflict_walker((Node *) cw->result, ctx))
+				return true;
+		}
+		return grouping_conflict_walker((Node *) cexpr->defresult, ctx);
+	}
+
+	return expression_tree_walker(node, grouping_conflict_walker, ctx);
+}
+
+/*
+ * grouping_check_operands
+ *		Check every argument of a comparison node as a direct operand of the
+ *		comparison's operator 'opno' and collation 'inputcollid'.
+ */
+static bool
+grouping_check_operands(Oid opno, Oid inputcollid, List *args,
+						grouping_walker_ctx *ctx)
+{
+	ListCell   *lc;
+
+	foreach(lc, args)
+	{
+		if (grouping_check_operand((Node *) lfirst(lc), opno, inputcollid, ctx))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * grouping_check_operand
+ *		Handle one operand 'arg' of a comparison with operator 'opno' and
+ *		collation 'inputcollid'.
+ *
+ * If 'arg' is a grouping column (after looking through RelabelType, or through
+ * a CaseTestExpr to the Var it stands for), verify that comparison's operator
+ * has equality semantics compatible with the grouping eqop and, for a
+ * nondeterministic collation, that it uses the same collation; such a direct
+ * operand is then fully handled and is not recursed into.  Any other operand
+ * is walked normally, so a grouping column buried inside it is seen as a
+ * non-operand reference.
+ */
+static bool
+grouping_check_operand(Node *arg, Oid opno, Oid inputcollid,
+					   grouping_walker_ctx *ctx)
+{
+	Node	   *node = arg;
+
+	while (node && IsA(node, RelabelType))
+		node = (Node *) ((RelabelType *) node)->arg;
+
+	if (node && IsA(node, CaseTestExpr))
+		node = (Node *) ctx->case_var;
+
+	if (node && IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+		Oid			grouping_eqop = ctx->get_eqop(var, ctx->cb_context);
+
+		if (OidIsValid(grouping_eqop))
+		{
+			/* incompatible equality semantics */
+			if (!equality_ops_are_compatible(opno, grouping_eqop))
+				return true;
+			/* nondeterministic collation compared under a different collation */
+			if (OidIsValid(var->varcollid) &&
+				!get_collation_isdeterministic(var->varcollid) &&
+				inputcollid != var->varcollid)
+				return true;
+		}
+		return false;			/* direct operand handled; do not recurse */
+	}
+
+	return grouping_conflict_walker(arg, ctx);
 }
 
 /*

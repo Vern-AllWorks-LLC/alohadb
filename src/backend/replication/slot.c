@@ -737,50 +737,60 @@ ReplicationSlotRelease(void)
 		 */
 		ReplicationSlotDropAcquired();
 	}
-
-	/*
-	 * If slot needed to temporarily restrain both data and catalog xmin to
-	 * create the catalog snapshot, remove that temporary constraint.
-	 * Snapshots can only be exported while the initial snapshot is still
-	 * acquired.
-	 */
-	if (!TransactionIdIsValid(slot->data.xmin) &&
-		TransactionIdIsValid(slot->effective_xmin))
-	{
-		SpinLockAcquire(&slot->mutex);
-		slot->effective_xmin = InvalidTransactionId;
-		SpinLockRelease(&slot->mutex);
-		ReplicationSlotsComputeRequiredXmin(false);
-	}
-
-	/*
-	 * Set the time since the slot has become inactive. We get the current
-	 * time beforehand to avoid system call while holding the spinlock.
-	 */
-	now = GetCurrentTimestamp();
-
-	if (slot->data.persistency == RS_PERSISTENT)
+	else
 	{
 		/*
-		 * Mark persistent slot inactive.  We're not freeing it, just
-		 * disconnecting, but wake up others that may be waiting for it.
+		 * If slot needed to temporarily restrain both data and catalog xmin
+		 * to create the catalog snapshot, remove that temporary constraint.
+		 * Snapshots can only be exported while the initial snapshot is still
+		 * acquired.
 		 */
-		SpinLockAcquire(&slot->mutex);
-		slot->active_pid = 0;
-		ReplicationSlotSetInactiveSince(slot, now, false);
-		SpinLockRelease(&slot->mutex);
-		ConditionVariableBroadcast(&slot->active_cv);
+		if (!TransactionIdIsValid(slot->data.xmin) &&
+			TransactionIdIsValid(slot->effective_xmin))
+		{
+			SpinLockAcquire(&slot->mutex);
+			slot->effective_xmin = InvalidTransactionId;
+			SpinLockRelease(&slot->mutex);
+			ReplicationSlotsComputeRequiredXmin(false);
+		}
+
+		/*
+		 * Set the time since the slot has become inactive. We get the current
+		 * time beforehand to avoid system call while holding the spinlock.
+		 */
+		now = GetCurrentTimestamp();
+
+		if (slot->data.persistency == RS_PERSISTENT)
+		{
+			/*
+			 * Mark persistent slot inactive.  We're not freeing it, just
+			 * disconnecting, but wake up others that may be waiting for it.
+			 */
+			SpinLockAcquire(&slot->mutex);
+			slot->active_pid = 0;
+			ReplicationSlotSetInactiveSince(slot, now, false);
+			SpinLockRelease(&slot->mutex);
+			ConditionVariableBroadcast(&slot->active_cv);
+		}
+		else
+			ReplicationSlotSetInactiveSince(slot, now, true);
+
+		MyReplicationSlot = NULL;
 	}
-	else
-		ReplicationSlotSetInactiveSince(slot, now, true);
 
-	MyReplicationSlot = NULL;
-
-	/* might not have been set when we've been a plain slot */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
-	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-	LWLockRelease(ProcArrayLock);
+	/*
+	 * Update statusFlags only if PROC_IN_LOGICAL_DECODING is set.  An
+	 * auxiliary process (checkpointer or startup process) may invalidate a
+	 * slot.  Auxiliary processes are not in the proc array, and pgxactoff
+	 * would point at something which is not its own.
+	 */
+	if (MyProc->statusFlags & PROC_IN_LOGICAL_DECODING)
+	{
+		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
+		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
+		LWLockRelease(ProcArrayLock);
+	}
 
 	if (am_walsender)
 	{

@@ -733,6 +733,11 @@ GenerationFree(void *pointer)
 	}
 
 #ifdef MEMORY_CONTEXT_CHECKING
+	/* See comments in AllocSetFree about uses of ERROR and WARNING here */
+	/* Test for previously-freed chunk */
+	if (unlikely(chunk->requested_size == InvalidAllocSize))
+		elog(ERROR, "detected double pfree in %s %p",
+			 ((MemoryContext) block->context)->name, chunk);
 	/* Test for someone scribbling on unused space in chunk */
 	Assert(chunk->requested_size < chunksize);
 	if (!sentinel_ok(pointer, chunk->requested_size))
@@ -776,11 +781,14 @@ GenerationFree(void *pointer)
 	 * 3)	If we have no "freeblock" set, then we save a single block for
 	 *		future allocations to avoid having to malloc a new block again.
 	 *		This is useful for FIFO workloads as it avoids continual
-	 *		free/malloc cycles.
+	 *		free/malloc cycles.  Don't reuse blocks larger than what we'd
+	 *		normally allocate (maxBlockSize) though; as explained in
+	 *		GenerationContextCreate(), a reused block must not exceed
+	 *		MEMORYCHUNK_MAX_BLOCKOFFSET.
 	 */
 	if (IsKeeperBlock(set, block) || set->block == block)
 		GenerationBlockMarkEmpty(block);	/* case 1 and 2 */
-	else if (set->freeblock == NULL)
+	else if (set->freeblock == NULL && block->blksize <= set->maxBlockSize)
 	{
 		/* case 3 */
 		GenerationBlockMarkEmpty(block);
@@ -838,6 +846,11 @@ GenerationRealloc(void *pointer, Size size, int flags)
 	set = block->context;
 
 #ifdef MEMORY_CONTEXT_CHECKING
+	/* See comments in AllocSetFree about uses of ERROR and WARNING here */
+	/* Test for previously-freed chunk */
+	if (unlikely(chunk->requested_size == InvalidAllocSize))
+		elog(ERROR, "detected realloc of freed chunk in %s %p",
+			 ((MemoryContext) set)->name, chunk);
 	/* Test for someone scribbling on unused space in chunk */
 	Assert(chunk->requested_size < oldsize);
 	if (!sentinel_ok(pointer, chunk->requested_size))

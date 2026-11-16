@@ -57,21 +57,33 @@ initcap_wbnext(void *state)
 	while (wbstate->offset < wbstate->len &&
 		   wbstate->str[wbstate->offset] != '\0')
 	{
-		pg_wchar	u = utf8_to_unicode((unsigned char *) wbstate->str +
+		int			ulen = pg_utf_mblen((const unsigned char *) wbstate->str +
 										wbstate->offset);
-		bool		curr_alnum = pg_u_isalnum(u, wbstate->posix);
+		pg_wchar	u;
+		bool		curr_alnum;
+		size_t		prev_offset = wbstate->offset;
+
+		/* invalid UTF8 */
+		if (wbstate->offset + ulen > wbstate->len)
+		{
+			wbstate->init = true;
+			wbstate->offset = wbstate->len;
+			return prev_offset;
+		}
+
+		u = utf8_to_unicode((const unsigned char *) wbstate->str +
+							wbstate->offset);
+		curr_alnum = pg_u_isalnum(u, wbstate->posix);
 
 		if (!wbstate->init || curr_alnum != wbstate->prev_alnum)
 		{
-			size_t		prev_offset = wbstate->offset;
-
 			wbstate->init = true;
-			wbstate->offset += unicode_utf8len(u);
+			wbstate->offset += ulen;
 			wbstate->prev_alnum = curr_alnum;
 			return prev_offset;
 		}
 
-		wbstate->offset += unicode_utf8len(u);
+		wbstate->offset += ulen;
 	}
 
 	return wbstate->len;
@@ -91,7 +103,7 @@ strtitle_builtin(char *dest, size_t destsize, const char *src, ssize_t srclen,
 {
 	struct WordBoundaryState wbstate = {
 		.str = src,
-		.len = srclen,
+		.len = (srclen < 0) ? strlen(src) : srclen,
 		.offset = 0,
 		.posix = !locale->info.builtin.casemap_full,
 		.init = false,
@@ -170,8 +182,8 @@ char *
 get_collation_actual_version_builtin(const char *collcollate)
 {
 	/*
-	 * The only two supported locales (C and C.UTF-8) are both based on memcmp
-	 * and are not expected to change, but track the version anyway.
+	 * The supported locales (C, C.UTF-8, and PG_UNICODE_FAST) are all based
+	 * on memcmp and are not expected to change, but track the version anyway.
 	 *
 	 * Note that the character semantics may change for some locales, but the
 	 * collation version only tracks changes to sort order.

@@ -540,8 +540,16 @@ offset_relid_set(Relids relids, int offset)
  *
  * Find all Var nodes in the given tree belonging to a specific relation
  * (identified by sublevels_up and rt_index), and change their varno fields
- * to 'new_index'.  The varnosyn fields are changed too.  Also, adjust other
- * nodes that contain rangetable indexes, such as RangeTblRef and JoinExpr.
+ * to 'new_index', and update varnosyn and varnullingrels fields similarly.
+ * Also adjust other nodes that contain rangetable indexes, such as
+ * RangeTblRef and JoinExpr.
+ *
+ * Also, new_index can be INVALID_VAR to indicate that we are deleting the
+ * given relid from the tree.  In this case we expect to find rt_index only
+ * in Relids fields (varnullingrels, phnullingrels, phrels), never in any
+ * field that identifies a single relation.  The exception is varnosyn,
+ * which may name an aliased join being removed; the join's RTE remains in
+ * the rangetable, so we leave such syntactic references unchanged.
  *
  * NOTE: although this has the form of a walker, we cheat and modify the
  * nodes in-place.  The given expression tree should have been copied
@@ -564,11 +572,16 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 		if (var->varlevelsup == context->sublevels_up)
 		{
 			if (var->varno == context->rt_index)
+			{
+				Assert(context->new_index != INVALID_VAR);
 				var->varno = context->new_index;
+			}
 			var->varnullingrels = adjust_relid_set(var->varnullingrels,
 												   context->rt_index,
 												   context->new_index);
-			if (var->varnosyn == context->rt_index)
+			/* when deleting, leave syntactic refs to a removed join alone */
+			if (var->varnosyn == context->rt_index &&
+				context->new_index != INVALID_VAR)
 				var->varnosyn = context->new_index;
 		}
 		return false;
@@ -579,7 +592,10 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 
 		if (context->sublevels_up == 0 &&
 			cexpr->cvarno == context->rt_index)
+		{
+			Assert(context->new_index != INVALID_VAR);
 			cexpr->cvarno = context->new_index;
+		}
 		return false;
 	}
 	if (IsA(node, RangeTblRef))
@@ -588,7 +604,10 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 
 		if (context->sublevels_up == 0 &&
 			rtr->rtindex == context->rt_index)
+		{
+			Assert(context->new_index != INVALID_VAR);
 			rtr->rtindex = context->new_index;
+		}
 		/* the subquery itself is visited separately */
 		return false;
 	}
@@ -598,7 +617,10 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 
 		if (context->sublevels_up == 0 &&
 			j->rtindex == context->rt_index)
+		{
+			Assert(context->new_index != INVALID_VAR);
 			j->rtindex = context->new_index;
+		}
 		/* fall through to examine children */
 	}
 	if (IsA(node, PlaceHolderVar))
@@ -623,9 +645,15 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 		if (context->sublevels_up == 0)
 		{
 			if (rowmark->rti == context->rt_index)
+			{
+				Assert(context->new_index != INVALID_VAR);
 				rowmark->rti = context->new_index;
+			}
 			if (rowmark->prti == context->rt_index)
+			{
+				Assert(context->new_index != INVALID_VAR);
 				rowmark->prti = context->new_index;
+			}
 		}
 		return false;
 	}
@@ -636,9 +664,15 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
 		if (context->sublevels_up == 0)
 		{
 			if (appinfo->parent_relid == context->rt_index)
+			{
+				Assert(context->new_index != INVALID_VAR);
 				appinfo->parent_relid = context->new_index;
+			}
 			if (appinfo->child_relid == context->rt_index)
+			{
+				Assert(context->new_index != INVALID_VAR);
 				appinfo->child_relid = context->new_index;
+			}
 		}
 		/* fall through to examine children */
 	}
@@ -671,7 +705,7 @@ ChangeVarNodes_walker(Node *node, ChangeVarNodes_context *context)
  * value indicating if the given node should be skipped from further processing
  * by ChangeVarNodes_walker.  The callback is called only for expressions and
  * other children nodes of a Query processed by a walker.  Initial processing
- * of the root Query doesn't involve the callback.
+ * of the root Query node doesn't invoke the callback.
  */
 void
 ChangeVarNodesExtended(Node *node, int rt_index, int new_index,
@@ -706,21 +740,33 @@ ChangeVarNodesExtended(Node *node, int rt_index, int new_index,
 			ListCell   *l;
 
 			if (qry->resultRelation == rt_index)
+			{
+				Assert(new_index != INVALID_VAR);
 				qry->resultRelation = new_index;
+			}
 
 			if (qry->mergeTargetRelation == rt_index)
+			{
+				Assert(new_index != INVALID_VAR);
 				qry->mergeTargetRelation = new_index;
+			}
 
 			/* this is unlikely to ever be used, but ... */
 			if (qry->onConflict && qry->onConflict->exclRelIndex == rt_index)
+			{
+				Assert(new_index != INVALID_VAR);
 				qry->onConflict->exclRelIndex = new_index;
+			}
 
 			foreach(l, qry->rowMarks)
 			{
 				RowMarkClause *rc = (RowMarkClause *) lfirst(l);
 
 				if (rc->rti == rt_index)
+				{
+					Assert(new_index != INVALID_VAR);
 					rc->rti = new_index;
+				}
 			}
 		}
 		query_tree_walker(qry, ChangeVarNodes_walker, &context, 0);
@@ -736,16 +782,27 @@ ChangeVarNodes(Node *node, int rt_index, int new_index, int sublevels_up)
 }
 
 /*
- * ChangeVarNodesWalkExpression - process expression within the custom
- *								  callback provided to the
- *								  ChangeVarNodesExtended.
+ * ChangeVarNodesWalkExpression - process subexpression within a callback
+ *								  function passed to ChangeVarNodesExtended.
+ *
+ * This is intended to be used by a callback that needs to recursively
+ * process subexpressions of some node being visited by an outer
+ * ChangeVarNodesExtended call, instead of relying on ChangeVarNodes_walker's
+ * default recursion.  We invoke ChangeVarNodes_walker directly rather than
+ * via expression_tree_walker, because expression_tree_walker only visits
+ * child nodes and would fail to process the passed node itself --
+ * for example, a bare Var node would not get its varno adjusted.
+ *
+ * Because this calls ChangeVarNodes_walker directly, if the passed node is
+ * a Query, it will be treated as a sub-Query: sublevels_up is incremented
+ * before recursing into it, and Query-level fields (resultRelation,
+ * mergeTargetRelation, rowMarks, etc.) will not be adjusted.  Do not apply
+ * this to a top-level Query node; use ChangeVarNodesExtended for that.
  */
 bool
 ChangeVarNodesWalkExpression(Node *node, ChangeVarNodes_context *context)
 {
-	return expression_tree_walker(node,
-								  ChangeVarNodes_walker,
-								  (void *) context);
+	return ChangeVarNodes_walker(node, context);
 }
 
 /*
@@ -1501,25 +1558,6 @@ replace_rte_variables_mutator(Node *node,
 			return newnode;
 		}
 		/* otherwise fall through to copy the var normally */
-	}
-	else if (IsA(node, CurrentOfExpr))
-	{
-		CurrentOfExpr *cexpr = (CurrentOfExpr *) node;
-
-		if (cexpr->cvarno == context->target_varno &&
-			context->sublevels_up == 0)
-		{
-			/*
-			 * We get here if a WHERE CURRENT OF expression turns out to apply
-			 * to a view.  Someday we might be able to translate the
-			 * expression to apply to an underlying table of the view, but
-			 * right now it's not implemented.
-			 */
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("WHERE CURRENT OF on a view is not implemented")));
-		}
-		/* otherwise fall through to copy the expr normally */
 	}
 	else if (IsA(node, Query))
 	{

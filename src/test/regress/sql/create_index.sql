@@ -45,6 +45,10 @@ CREATE INDEX six ON shighway USING btree (name text_ops);
 COMMENT ON INDEX six_wrong IS 'bad index';
 COMMENT ON INDEX six IS 'good index';
 COMMENT ON INDEX six IS NULL;
+SELECT obj_description('six'::regclass, 'pg_class') IS NULL AS six_comment_is_null;
+COMMENT ON INDEX six IS 'add the comment back';
+COMMENT ON INDEX six IS ''; -- empty string removes the comment, same as NULL
+SELECT obj_description('six'::regclass, 'pg_class') IS NULL AS six_comment_is_null;
 
 --
 -- BTREE partial indices
@@ -1134,6 +1138,27 @@ CREATE INDEX concur_appclass_ind_2 on concur_appclass_tab
 REINDEX TABLE CONCURRENTLY concur_appclass_tab;
 \d concur_appclass_tab
 DROP TABLE concur_appclass_tab;
+
+-- Check that a function called from an index expression is not able to
+-- manipulate a relation involved in the operation.
+CREATE TABLE concur_reindex_ddl_tab (i int);
+INSERT INTO concur_reindex_ddl_tab VALUES (1);
+-- Use two functions, one volatile called in a second, immutable, one.
+CREATE FUNCTION concur_reindex_ddl_f() RETURNS void LANGUAGE plpgsql AS
+  'begin DROP INDEX IF EXISTS public.concur_reindex_ddl_ind2; end';
+CREATE FUNCTION concur_reindex_ddl_im(int) RETURNS int
+  LANGUAGE plpgsql IMMUTABLE AS
+  'begin perform public.concur_reindex_ddl_f(); return $1; end';
+CREATE INDEX concur_reindex_ddl_ind1 ON
+  concur_reindex_ddl_tab (concur_reindex_ddl_im(i));
+CREATE INDEX concur_reindex_ddl_ind2 ON concur_reindex_ddl_tab (i);
+REINDEX TABLE CONCURRENTLY concur_reindex_ddl_tab; -- error
+REINDEX INDEX CONCURRENTLY concur_reindex_ddl_ind2; -- ok
+REINDEX INDEX CONCURRENTLY concur_reindex_ddl_ind1; -- ok
+REINDEX INDEX CONCURRENTLY concur_reindex_ddl_ind2; -- dropped
+DROP TABLE concur_reindex_ddl_tab;
+DROP FUNCTION concur_reindex_ddl_im(int);
+DROP FUNCTION concur_reindex_ddl_f();
 
 -- Partitions
 -- Create some partitioned tables

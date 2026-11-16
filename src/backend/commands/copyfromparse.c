@@ -147,15 +147,15 @@ static int	CopyReadAttributesCSV(CopyFromState cstate);
 static Datum CopyReadBinaryAttribute(CopyFromState cstate, FmgrInfo *flinfo,
 									 Oid typioparam, int32 typmod,
 									 bool *isnull);
-static pg_attribute_always_inline bool CopyFromTextLikeOneRow(CopyFromState cstate,
-															  ExprContext *econtext,
-															  Datum *values,
-															  bool *nulls,
-															  bool is_csv);
-static pg_attribute_always_inline bool NextCopyFromRawFieldsInternal(CopyFromState cstate,
-																	 char ***fields,
-																	 int *nfields,
-																	 bool is_csv);
+static pg_always_inline bool CopyFromTextLikeOneRow(CopyFromState cstate,
+													ExprContext *econtext,
+													Datum *values,
+													bool *nulls,
+													bool is_csv);
+static pg_always_inline bool NextCopyFromRawFieldsInternal(CopyFromState cstate,
+														   char ***fields,
+														   int *nfields,
+														   bool is_csv);
 
 
 /* Low-level communications functions */
@@ -763,11 +763,11 @@ NextCopyFromRawFields(CopyFromState cstate, char ***fields, int *nfields)
  *
  * NOTE: force_not_null option are not applied to the returned fields.
  *
- * We use pg_attribute_always_inline to reduce function call overhead
+ * We use pg_always_inline to reduce function call overhead
  * and to help compilers to optimize away the 'is_csv' condition when called
  * by internal functions such as CopyFromTextLikeOneRow().
  */
-static pg_attribute_always_inline bool
+static pg_always_inline bool
 NextCopyFromRawFieldsInternal(CopyFromState cstate, char ***fields, int *nfields, bool is_csv)
 {
 	int			fldct;
@@ -930,10 +930,10 @@ CopyFromCSVOneRow(CopyFromState cstate, ExprContext *econtext, Datum *values,
 /*
  * Workhorse for CopyFromTextOneRow() and CopyFromCSVOneRow().
  *
- * We use pg_attribute_always_inline to reduce function call overhead
+ * We use pg_always_inline to reduce function call overhead
  * and to help compilers to optimize away the 'is_csv' condition.
  */
-static pg_attribute_always_inline bool
+static pg_always_inline bool
 CopyFromTextLikeOneRow(CopyFromState cstate, ExprContext *econtext,
 					   Datum *values, bool *nulls, bool is_csv)
 {
@@ -1068,6 +1068,10 @@ CopyFromTextLikeOneRow(CopyFromState cstate, ExprContext *econtext,
 				/* reset relname_only */
 				cstate->relname_only = false;
 			}
+
+			/* The return below skips the clear at the bottom of the loop */
+			cstate->cur_attname = NULL;
+			cstate->cur_attval = NULL;
 
 			return true;
 		}

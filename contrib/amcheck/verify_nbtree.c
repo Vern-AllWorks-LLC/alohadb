@@ -33,7 +33,6 @@
 #include "verify_common.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
-#include "catalog/pg_opfamily_d.h"
 #include "common/pg_prng.h"
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
@@ -329,22 +328,10 @@ bt_index_check_callback(Relation indrel, Relation heaprel, void *state, bool rea
 				 errmsg("index \"%s\" metapage has equalimage field set on unsupported nbtree version",
 						RelationGetRelationName(indrel))));
 	if (allequalimage && !_bt_allequalimage(indrel, false))
-	{
-		bool		has_interval_ops = false;
-
-		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(indrel); i++)
-			if (indrel->rd_opfamily[i] == INTERVAL_BTREE_FAM_OID)
-			{
-				has_interval_ops = true;
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("index \"%s\" metapage incorrectly indicates that deduplication is safe",
-								RelationGetRelationName(indrel)),
-						 has_interval_ops
-						 ? errhint("This is known of \"interval\" indexes last built on a version predating 2023-11.")
-						 : 0));
-			}
-	}
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("index \"%s\" metapage incorrectly indicates that deduplication is safe",
+						RelationGetRelationName(indrel))));
 
 	/* Check index, possibly against table it is an index on */
 	bt_check_every_level(indrel, heaprel, heapkeyspace, readonly,
@@ -2891,7 +2878,7 @@ bt_normalize_tuple(BtreeCheckState *state, IndexTuple itup)
 							ItemPointerGetOffsetNumber(&(itup->t_tid)),
 							RelationGetRelationName(state->rel))));
 		else if (!VARATT_IS_COMPRESSED(DatumGetPointer(normalized[i])) &&
-				 VARSIZE(DatumGetPointer(normalized[i])) > TOAST_INDEX_TARGET &&
+				 VARSIZE_ANY(DatumGetPointer(normalized[i])) > TOAST_INDEX_TARGET &&
 				 (att->attstorage == TYPSTORAGE_EXTENDED ||
 				  att->attstorage == TYPSTORAGE_MAIN))
 		{

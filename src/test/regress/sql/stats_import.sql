@@ -15,6 +15,12 @@ CREATE TABLE stats_import.test(
     tags text[]
 ) WITH (autovacuum_enabled = false);
 
+CREATE TABLE stats_import.test_mr(
+    id INTEGER PRIMARY KEY,
+    name text,
+    mrange int4multirange
+) WITH (autovacuum_enabled = false);
+
 SELECT
     pg_catalog.pg_restore_relation_stats(
         'schemaname', 'stats_import',
@@ -176,6 +182,49 @@ SELECT pg_restore_relation_stats(
 SELECT relpages, reltuples, relallvisible, relallfrozen
 FROM pg_class
 WHERE oid = 'stats_import.test'::regclass;
+
+-- error: reltuples must be finite (rejected with WARNING, returns false)
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', 'Infinity'::real);
+
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', '-Infinity'::real);
+
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', 'NaN'::real);
+
+-- error: reltuples must not be less than -1.0 (rejected with WARNING, returns false)
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', '-5'::real);
+
+-- reltuples is unchanged (still 500) after the rejected values above
+SELECT relpages, reltuples, relallvisible, relallfrozen
+FROM pg_class
+WHERE oid = 'stats_import.test'::regclass;
+
+-- ok: -1 (the "unknown" sentinel) is still accepted
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', '-1'::real);
+
+SELECT relpages, reltuples, relallvisible, relallfrozen
+FROM pg_class
+WHERE oid = 'stats_import.test'::regclass;
+
+-- restore reltuples to 500 for the following tests
+SELECT pg_restore_relation_stats(
+        'schemaname', 'stats_import',
+        'relname', 'test',
+        'reltuples', '500'::real);
 
 -- ok: set just relallvisible, rest stay same
 SELECT pg_restore_relation_stats(
@@ -448,6 +497,60 @@ SELECT pg_catalog.pg_restore_attribute_stats(
     'null_frac', 0.23::real,
     'most_common_vals', '{2,four,3}'::text,
     'most_common_freqs', '{0.3,0.25,0.05}'::real[]
+    );
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test'
+AND inherited = false
+AND attname = 'id';
+
+-- warn: mcv / mcf array length mismatch (more vals), mcv-pair fails, rest get set
+SELECT pg_catalog.pg_restore_attribute_stats(
+    'schemaname', 'stats_import',
+    'relname', 'test',
+    'attname', 'id',
+    'inherited', false::boolean,
+    'null_frac', 0.24::real,
+    'most_common_vals', '{2,1,3}'::text,
+    'most_common_freqs', '{0.3,0.25}'::real[]
+    );
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test'
+AND inherited = false
+AND attname = 'id';
+
+-- warn: mcv / mcf array length mismatch (more freqs), mcv-pair fails, rest get set
+SELECT pg_catalog.pg_restore_attribute_stats(
+    'schemaname', 'stats_import',
+    'relname', 'test',
+    'attname', 'id',
+    'inherited', false::boolean,
+    'null_frac', 0.25::real,
+    'most_common_vals', '{2,1}'::text,
+    'most_common_freqs', '{0.3,0.25,0.05}'::real[]
+    );
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test'
+AND inherited = false
+AND attname = 'id';
+
+-- warn: most_common_vals is multi-dimensional, mcv-pair fails, rest get set
+SELECT pg_catalog.pg_restore_attribute_stats(
+    'schemaname', 'stats_import',
+    'relname', 'test',
+    'attname', 'id',
+    'inherited', false::boolean,
+    'null_frac', 0.26::real,
+    'most_common_vals', '{{2,1},{3,4}}'::text,
+    'most_common_freqs', '{0.3,0.25,0.05,0.04}'::real[]
     );
 
 SELECT *
@@ -747,6 +850,151 @@ AND tablename = 'test'
 AND inherited = false
 AND attname = 'id';
 
+-- test for multiranges
+INSERT INTO stats_import.test_mr
+VALUES
+  (1, 'red', '{[1,3),[5,9),[20,30)}'::int4multirange),
+  (2, 'red', '{[11,13),[15,19),[20,30)}'::int4multirange),
+  (3, 'red', '{[21,23),[25,29),[120,130)}'::int4multirange);
+
+-- warn: reject range values as ordinary multirange statistics
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_mr',
+  'attname', 'mrange',
+  'inherited', false,
+  'most_common_vals', ARRAY['[1,3)']::text,
+  'most_common_freqs', ARRAY[1.0]::real[]
+);
+
+-- ensure that we set attribute stats for a multirange
+-- MCVs and histograms retain the multirange type.
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_mr',
+  'attname', 'mrange',
+  'inherited', false,
+  'most_common_vals', ARRAY['{[1,3),[5,9)}', '{[11,13),[15,19)}']::text,
+  'most_common_freqs', ARRAY[0.6, 0.4]::real[],
+  'histogram_bounds', ARRAY['{[1,3)}', '{[11,13)}', '{[21,23)}']::text,
+  'range_length_histogram', '{19,29,109}'::text,
+  'range_empty_frac', '0'::real,
+  'range_bounds_histogram', '{"[1,30)","[11,30)","[21,130)"}'::text
+);
+
+-- test for domains over range and multirange types
+CREATE DOMAIN stats_import.dom_int4 AS int4;
+CREATE DOMAIN stats_import.dom_range AS int4range;
+CREATE DOMAIN stats_import.dom_mrange AS int4multirange;
+
+CREATE TABLE stats_import.test_dom(
+    id stats_import.dom_int4,
+    drange stats_import.dom_range,
+    dmrange stats_import.dom_mrange
+) WITH (autovacuum_enabled = false);
+
+INSERT INTO stats_import.test_dom
+VALUES (1, '[1,3)', '{[1,3),[5,9),[20,30)}'),
+  (2, '[5,9)', '{[11,13),[15,19),[20,30)}'),
+  (3, '[11,15)', '{[21,23),[25,29),[120,130)}');
+
+-- warn: domain over a scalar type cannot have range stats
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_dom',
+  'attname', 'id',
+  'inherited', false,
+  'null_frac', 0.25::real,
+  'range_length_histogram', '{2,4,4}'::text,
+  'range_empty_frac', '0'::real,
+  'range_bounds_histogram', '{"[1,3)","[5,9)","[11,15)"}'::text
+);
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test_dom'
+AND inherited = false
+AND attname = 'id';
+
+-- ok: range stats for a domain over a range type
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_dom',
+  'attname', 'drange',
+  'inherited', false,
+  'range_length_histogram', '{2,4,4}'::text,
+  'range_empty_frac', '0'::real,
+  'range_bounds_histogram', '{"[1,3)","[5,9)","[11,15)"}'::text
+);
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test_dom'
+AND inherited = false
+AND attname = 'drange';
+
+-- ok: range stats for a domain over a multirange type.
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_dom',
+  'attname', 'dmrange',
+  'inherited', false,
+  'range_length_histogram', '{29,29,109}'::text,
+  'range_empty_frac', '0'::real,
+  'range_bounds_histogram', '{"[1,30)","[11,30)","[21,130)"}'::text
+);
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test_dom'
+AND inherited = false
+AND attname = 'dmrange';
+
+-- warn: multirange values in the bounds histogram of a domain.  These
+-- must be ranges.
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_dom',
+  'attname', 'dmrange',
+  'inherited', false,
+  'range_length_histogram', '{29,29,109}'::text,
+  'range_empty_frac', '0'::real,
+  'range_bounds_histogram', '{"{[1,30)}","{[11,30)}"}'::text
+);
+
+-- test for a domain over tsvector.
+CREATE DOMAIN stats_import.dom_tsvector AS tsvector;
+
+CREATE TABLE stats_import.test_dom_ts(
+    id int,
+    v stats_import.dom_tsvector
+) WITH (autovacuum_enabled = false);
+
+INSERT INTO stats_import.test_dom_ts
+SELECT g, to_tsvector('english', 'the quick brown fox ' || g)
+FROM generate_series(1, 20) AS g;
+
+-- ok: mcelem and elem_count_histogram for a domain over tsvector
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_dom_ts',
+  'attname', 'v',
+  'inherited', false,
+  'most_common_elems', '{brown,fox,quick}'::text,
+  'most_common_elem_freqs', '{0.3,0.2,0.2,0.3,0.0}'::real[],
+  'elem_count_histogram', '{4,4,4,4,4,4,4,4,4,4}'::real[]
+);
+
+SELECT *
+FROM pg_stats
+WHERE schemaname = 'stats_import'
+AND tablename = 'test_dom_ts'
+AND inherited = false
+AND attname = 'v';
+
 --
 -- Test the ability to exactly copy data from one table to an identical table,
 -- correctly reconstructing the stakind order as well as the staopN and
@@ -970,4 +1218,77 @@ AND tablename = 'stats_temp'
 AND inherited = false
 AND attname = 'i';
 DROP TABLE stats_temp;
+
+-- A function invoked while importing attribute statistics (here through a
+-- domain's CHECK constraint) must not be able to alter the target relation
+-- underneath the import.  The relation is held open across the import, so a
+-- reentrant ALTER TABLE is rejected and no mismatched statistics are stored.
+CREATE TABLE stats_import.test_reentrant (id uuid);
+
+CREATE FUNCTION stats_import.alter_during_import(uuid) RETURNS boolean
+  LANGUAGE plpgsql AS $$
+BEGIN
+  ALTER TABLE stats_import.test_reentrant
+    ALTER COLUMN id TYPE int4range USING int4range(1, 2);
+  RETURN true;
+END;
+$$;
+
+CREATE DOMAIN stats_import.reentrant_dom AS uuid
+  CHECK (stats_import.alter_during_import(VALUE));
+
+ALTER TABLE stats_import.test_reentrant
+  ALTER COLUMN id TYPE stats_import.reentrant_dom;
+
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_reentrant',
+  'attname', 'id',
+  'inherited', false,
+  'most_common_vals', '{00000000-0000-0000-0000-000000000000}'::text,
+  'most_common_freqs', '{1}'::real[]);
+
+-- No statistics should have been stored for the column.
+SELECT count(*) FROM pg_statistic
+  WHERE starelid = 'stats_import.test_reentrant'::regclass;
+
+-- Holding the relation open does not stop such a function from dropping the
+-- target column itself.  Dropping the column's domain with CASCADE removes
+-- the column through a dependency, which does not go through
+-- CheckTableNotInUse().  The import must re-check that the column still
+-- exists before writing and error out if it doesn't, so that no pg_statistic
+-- row is left behind for a dropped column.
+CREATE TABLE stats_import.test_reentrant_attr2 (id uuid);
+
+CREATE FUNCTION stats_import.drop_during_import_attr(uuid) RETURNS boolean
+  LANGUAGE plpgsql AS $$
+BEGIN
+  DROP DOMAIN stats_import.reentrant_dom_attr2 CASCADE;
+  RETURN true;
+END;
+$$;
+
+CREATE DOMAIN stats_import.reentrant_dom_attr2 AS uuid
+  CHECK (stats_import.drop_during_import_attr(VALUE));
+
+ALTER TABLE stats_import.test_reentrant_attr2
+  ALTER COLUMN id TYPE stats_import.reentrant_dom_attr2;
+
+SELECT pg_catalog.pg_restore_attribute_stats(
+  'schemaname', 'stats_import',
+  'relname', 'test_reentrant_attr2',
+  'attname', 'id',
+  'inherited', false,
+  'null_frac', 0.5::real,
+  'most_common_vals', '{00000000-0000-0000-0000-000000000000}'::text,
+  'most_common_freqs', '{1}'::real[]);
+
+-- No pg_statistic row should remain for a dropped column.
+SELECT count(*) FROM pg_statistic s
+  WHERE s.starelid = 'stats_import.test_reentrant_attr2'::regclass
+    AND NOT EXISTS (SELECT FROM pg_attribute a
+                    WHERE a.attrelid = s.starelid
+                      AND a.attnum = s.staattnum
+                      AND NOT a.attisdropped);
+
 DROP SCHEMA stats_import CASCADE;

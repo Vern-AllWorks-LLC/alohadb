@@ -46,9 +46,11 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
+#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/placeholder.h"
 #include "parser/parsetree.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partprune.h"
@@ -1814,6 +1816,15 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
  *   and couldn't possibly match any other one either, due to its form or
  *   properties (such as containing a volatile function).
  *   Output arguments: none set.
+ *
+ * Note that when pulling up a subquery, the clause operands may get wrapped
+ * in PlaceHolderVars to enforce separate identity or as a result of outer
+ * joins.  We must strip such no-op PlaceHolderVars before comparing operands
+ * to the partition key, otherwise the equal() checks will fail to recognize
+ * valid matches.  This is safe because the clauses here are always
+ * relation-scan-level expressions, where a PlaceHolderVar with empty
+ * phnullingrels is effectively a no-op.  Stripping may also bring separate
+ * RelabelType nodes into adjacency, so we must loop when peeling those.
  */
 static PartClauseMatchStatus
 match_clause_to_partition_key(GeneratePruningStepsContext *context,
@@ -1929,10 +1940,12 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		PartClauseInfo *partclause;
 
 		leftop = (Expr *) get_leftop(clause);
-		if (IsA(leftop, RelabelType))
+		leftop = (Expr *) strip_noop_phvs((Node *) leftop);
+		while (IsA(leftop, RelabelType))
 			leftop = ((RelabelType *) leftop)->arg;
 		rightop = (Expr *) get_rightop(clause);
-		if (IsA(rightop, RelabelType))
+		rightop = (Expr *) strip_noop_phvs((Node *) rightop);
+		while (IsA(rightop, RelabelType))
 			rightop = ((RelabelType *) rightop)->arg;
 		opno = opclause->opno;
 
@@ -2063,12 +2076,21 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 
 			/*
 			 * See if there are any exec Params.  If so, we can only use this
-			 * expression during per-scan pruning.
+			 * expression during per-scan pruning.  The same is true if it
+			 * contains a SubPlan, as evaluating that requires the parent
+			 * node's PlanState, which startup-time pruning hasn't got.  (A
+			 * SubPlan's testexpr normally contains exec Params, so we'd have
+			 * caught it above, but the testexpr can be folded to a Const.)
 			 */
 			paramids = pull_exec_paramids(expr);
 			if (!bms_is_empty(paramids))
 			{
 				context->has_exec_param = true;
+				if (context->target != PARTTARGET_EXEC)
+					return PARTCLAUSE_UNSUPPORTED;
+			}
+			else if (contain_subplans((Node *) expr))
+			{
 				if (context->target != PARTTARGET_EXEC)
 					return PARTCLAUSE_UNSUPPORTED;
 			}
@@ -2180,7 +2202,8 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 				   *elem_clauses;
 		ListCell   *lc1;
 
-		if (IsA(leftop, RelabelType))
+		leftop = (Expr *) strip_noop_phvs((Node *) leftop);
+		while (IsA(leftop, RelabelType))
 			leftop = ((RelabelType *) leftop)->arg;
 
 		/* check if the LHS matches this partition key */
@@ -2406,7 +2429,8 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		NullTest   *nulltest = (NullTest *) clause;
 		Expr	   *arg = nulltest->arg;
 
-		if (IsA(arg, RelabelType))
+		arg = (Expr *) strip_noop_phvs((Node *) arg);
+		while (IsA(arg, RelabelType))
 			arg = ((RelabelType *) arg)->arg;
 
 		/* Does arg match with this partition key column? */
@@ -2540,6 +2564,8 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 
 	/* Actually, recursion would be limited by PARTITION_MAX_KEYS. */
 	check_stack_depth();
+
+	CHECK_FOR_INTERRUPTS();
 
 	Assert(start != NULL);
 	cur_keyno = ((PartClauseInfo *) lfirst(start))->keyno;
@@ -3018,15 +3044,9 @@ get_matching_range_bounds(PartitionPruneContext *context,
 	 */
 	if (nvalues == 0)
 	{
-		/* ignore key space not covered by any partitions */
-		if (partindices[minoff] < 0)
-			minoff++;
-		if (partindices[maxoff] < 0)
-			maxoff--;
-
 		result->scan_default = partition_bound_has_default(boundinfo);
-		Assert(partindices[minoff] >= 0 &&
-			   partindices[maxoff] >= 0);
+		Assert(partindices[minoff] >= -1 &&
+			   partindices[maxoff] >= -1);
 		result->bound_offsets = bms_add_range(NULL, minoff, maxoff);
 
 		return result;
@@ -3137,9 +3157,17 @@ get_matching_range_bounds(PartitionPruneContext *context,
 
 					/*
 					 * off + 1, then would be the offset of the greatest bound
-					 * to be included in the result.
+					 * to be included in the result.  The exception is the
+					 * mirror image of the MINVALUE case above: if the matched
+					 * bound is exactly (prefix, MAXVALUE), no row carrying
+					 * this prefix can sort above it, so the key space beyond
+					 * it need not be considered.
 					 */
-					maxoff = off + 1;
+					if (boundinfo->kind[off][nvalues] ==
+						PARTITION_RANGE_DATUM_MAXVALUE)
+						maxoff = off;
+					else
+						maxoff = off + 1;
 				}
 
 				Assert(minoff >= 0 && maxoff >= 0);
@@ -3200,12 +3228,15 @@ get_matching_range_bounds(PartitionPruneContext *context,
 					 * of smallest such bound) or find the smallest one that's
 					 * greater than the lookup values and set minoff to that.
 					 */
-					while (off >= 1 && off < boundinfo->ndatums - 1)
+					while (true)
 					{
 						int32		cmpval;
 						int			nextoff;
 
 						nextoff = inclusive ? off - 1 : off + 1;
+
+						if (nextoff < 0 || nextoff >= boundinfo->ndatums)
+							break;
 						cmpval =
 							partition_rbound_datum_cmp(partsupfunc,
 													   partcollation,
@@ -3259,16 +3290,21 @@ get_matching_range_bounds(PartitionPruneContext *context,
 			if (off >= 0)
 			{
 				/*
-				 * See the comment above.
+				 * As above, check adjacent bounds to see if the bound is
+				 * equal to the lookup value.
 				 */
 				if (is_equal && nvalues < partnatts)
 				{
-					while (off >= 1 && off < boundinfo->ndatums - 1)
+					while (true)
 					{
 						int32		cmpval;
 						int			nextoff;
 
 						nextoff = inclusive ? off + 1 : off - 1;
+
+						if (nextoff < 0 || nextoff >= boundinfo->ndatums)
+							break;
+
 						cmpval = partition_rbound_datum_cmp(partsupfunc,
 															partcollation,
 															boundinfo->datums[nextoff],
@@ -3322,43 +3358,45 @@ get_matching_range_bounds(PartitionPruneContext *context,
 	Assert(minoff >= 0 && minoff <= boundinfo->ndatums);
 	Assert(maxoff >= 0 && maxoff <= boundinfo->ndatums);
 
-	/*
-	 * If the smallest partition to return has MINVALUE (negative infinity) as
-	 * its lower bound, increment it to point to the next finite bound
-	 * (supposedly its upper bound), so that we don't inadvertently end up
-	 * scanning the default partition.
-	 */
-	if (minoff < boundinfo->ndatums && partindices[minoff] < 0)
-	{
-		int			lastkey = nvalues - 1;
 
-		if (boundinfo->kind[minoff][lastkey] ==
-			PARTITION_RANGE_DATUM_MINVALUE)
+	/*
+	 * Check for cases that we're scanning the DEFAULT partition when no rows
+	 * can exist there for the given value.  This can happen when the first or
+	 * final bound for partitions we're scanning have a MINVALUE or MAXVALUE
+	 * clause respectively.  We needn't scan the DEFAULT partition for values
+	 * beyond the bound since the MINVALUE / MAXVALUE bound handles up to
+	 * negative or positive infinity.  The BTEqualStrategyNumber code above
+	 * handled doing this for subsequent partition keys, so all that's left to
+	 * handle here is the same for the first partition key.  We needn't
+	 * perform this for all steps as the intersected results from the
+	 * recursive processing of pruning steps for leading keys means we only
+	 * scan the partitions common to all steps in the intersected set of
+	 * steps.
+	 */
+	if (nvalues == 1)
+	{
+		/*
+		 * Check if we're scanning the default and if a MINVALUE bound covers
+		 * the key space for the lower end.
+		 */
+		if (minoff < boundinfo->ndatums && partindices[minoff] < 0 &&
+			boundinfo->kind[minoff][0] == PARTITION_RANGE_DATUM_MINVALUE)
 		{
 			minoff++;
 			Assert(boundinfo->indexes[minoff] >= 0);
 		}
-	}
 
-	/*
-	 * If the previous greatest partition has MAXVALUE (positive infinity) as
-	 * its upper bound (something only possible to do with multi-column range
-	 * partitioning), we scan switch to it as the greatest partition to
-	 * return.  Again, so that we don't inadvertently end up scanning the
-	 * default partition.
-	 */
-	if (maxoff >= 1 && partindices[maxoff] < 0)
-	{
-		int			lastkey = nvalues - 1;
-
-		if (boundinfo->kind[maxoff - 1][lastkey] ==
-			PARTITION_RANGE_DATUM_MAXVALUE)
+		/*
+		 * Likewise, do the same check for the upper range partition if the
+		 * prior bound is a MAXVALUE kind.
+		 */
+		if (maxoff >= 1 && partindices[maxoff] < 0 &&
+			boundinfo->kind[maxoff - 1][0] == PARTITION_RANGE_DATUM_MAXVALUE)
 		{
 			maxoff--;
 			Assert(boundinfo->indexes[maxoff] >= 0);
 		}
 	}
-
 	Assert(minoff >= 0 && maxoff >= 0);
 	if (minoff <= maxoff)
 		result->bound_offsets = bms_add_range(NULL, minoff, maxoff);
@@ -3718,7 +3756,8 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 		BooleanTest *btest = (BooleanTest *) clause;
 
 		leftop = btest->arg;
-		if (IsA(leftop, RelabelType))
+		leftop = (Expr *) strip_noop_phvs((Node *) leftop);
+		while (IsA(leftop, RelabelType))
 			leftop = ((RelabelType *) leftop)->arg;
 
 		if (equal(leftop, partkey))
@@ -3755,7 +3794,8 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 
 		leftop = is_not_clause ? get_notclausearg(clause) : clause;
 
-		if (IsA(leftop, RelabelType))
+		leftop = (Expr *) strip_noop_phvs((Node *) leftop);
+		while (IsA(leftop, RelabelType))
 			leftop = ((RelabelType *) leftop)->arg;
 
 		/* Compare to the partition key, and make up a clause ... */

@@ -627,8 +627,6 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 				new_rel_allfrozen;
 	PGRUsage	ru0;
 	TimestampTz starttime = 0;
-	PgStat_Counter startreadtime = 0,
-				startwritetime = 0;
 	WalUsage	startwalusage = pgWalUsage;
 	BufferUsage startbufferusage = pgBufferUsage;
 	ErrorContextCallback errcallback;
@@ -638,14 +636,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	instrument = (verbose || (AmAutoVacuumWorkerProcess() &&
 							  params->log_min_duration >= 0));
 	if (instrument)
-	{
 		pg_rusage_init(&ru0);
-		if (track_io_timing)
-		{
-			startreadtime = pgStatBlockReadTime;
-			startwritetime = pgStatBlockWriteTime;
-		}
-	}
 
 	/* Used for instrumentation and stats report */
 	starttime = GetCurrentTimestamp();
@@ -1115,8 +1106,17 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 			}
 			if (track_io_timing)
 			{
-				double		read_ms = (double) (pgStatBlockReadTime - startreadtime) / 1000;
-				double		write_ms = (double) (pgStatBlockWriteTime - startwritetime) / 1000;
+				/*
+				 * Take the timings from the same buffer usage delta as the
+				 * block counts, so that the parallel workers are included in
+				 * both.
+				 */
+				double		read_ms =
+					INSTR_TIME_GET_MILLISEC(bufferusage.shared_blk_read_time) +
+					INSTR_TIME_GET_MILLISEC(bufferusage.local_blk_read_time);
+				double		write_ms =
+					INSTR_TIME_GET_MILLISEC(bufferusage.shared_blk_write_time) +
+					INSTR_TIME_GET_MILLISEC(bufferusage.local_blk_write_time);
 
 				appendStringInfo(&buf, _("I/O timings: read: %.3f ms, write: %.3f ms\n"),
 								 read_ms, write_ms);
@@ -1206,6 +1206,7 @@ lazy_scan_heap(LVRelState *vacrel)
 	BlockNumber orig_eager_scan_success_limit =
 		vacrel->eager_scan_remaining_successes; /* for logging */
 	Buffer		vmbuffer = InvalidBuffer;
+	bool		strategy_cleared = false;
 	const int	initprog_index[] = {
 		PROGRESS_VACUUM_PHASE,
 		PROGRESS_VACUUM_TOTAL_HEAP_BLKS,
@@ -1305,6 +1306,19 @@ lazy_scan_heap(LVRelState *vacrel)
 			/* Report that we are once again scanning the heap */
 			pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
 										 PROGRESS_VACUUM_PHASE_SCAN_HEAP);
+		}
+
+		/*
+		 * If the wraparound failsafe has engaged -- either via the check
+		 * above or during index vacuuming invoked from this loop -- stop
+		 * using the buffer access strategy so that the rest of the vacuum may
+		 * use all of shared buffers. Failsafe mode stays engaged once
+		 * triggered, so we only need to do this once.
+		 */
+		if (unlikely(VacuumFailsafeActive) && !strategy_cleared)
+		{
+			read_stream_clear_strategy(stream);
+			strategy_cleared = true;
 		}
 
 		buf = read_stream_next_buffer(stream, &per_buffer_data);
@@ -2964,9 +2978,19 @@ lazy_check_wraparound_failsafe(LVRelState *vacrel)
 		VacuumFailsafeActive = true;
 
 		/*
-		 * Abandon use of a buffer access strategy to allow use of all of
-		 * shared buffers.  We assume the caller who allocated the memory for
-		 * the BufferAccessStrategy will free it.
+		 * We abandon use of the strategy in failsafe mode to allow use of all
+		 * of shared buffers. vacrel->bstrategy is not the source of truth for
+		 * an ongoing heap scan, but clear it just for tidiness. Any ongoing
+		 * phase I heap scan has its own references to the strategy and clears
+		 * them separately (see lazy_scan_heap()). And none of the other
+		 * vacuum phases will read from vacrel->bstrategy once failsafe mode
+		 * is engaged. The phase I read stream clears the strategy references
+		 * held by the ReadBuffersOperations outside of this function because
+		 * lazy_check_wraparound_failsafe() may be called from any phase of
+		 * vacuum, including when the phase I stream is inactive.
+		 *
+		 * We assume the caller who allocated the memory for the
+		 * BufferAccessStrategy will free it.
 		 */
 		vacrel->bstrategy = NULL;
 

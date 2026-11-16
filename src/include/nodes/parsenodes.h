@@ -1391,6 +1391,10 @@ typedef enum WCOKind
 	WCO_RLS_CONFLICT_CHECK,		/* RLS ON CONFLICT DO UPDATE USING policy */
 	WCO_RLS_MERGE_UPDATE_CHECK, /* RLS MERGE UPDATE USING policy */
 	WCO_RLS_MERGE_DELETE_CHECK, /* RLS MERGE DELETE USING policy */
+	WCO_VIEW_CONFLICT_CHECK,	/* auto-updatable view's WHERE quals, checked
+								 * against the existing row by ON CONFLICT DO
+								 * UPDATE; neither a true WITH CHECK OPTION
+								 * check nor an RLS check */
 } WCOKind;
 
 typedef struct WithCheckOption
@@ -3491,6 +3495,7 @@ typedef struct CreateStatsStmt
 	char	   *stxcomment;		/* comment to apply to stats, or NULL */
 	bool		transformed;	/* true when transformStatsStmt is finished */
 	bool		if_not_exists;	/* do nothing if stats name already exists */
+	Oid			owner;			/* OID of owner, or InvalidOid for default */
 } CreateStatsStmt;
 
 /*

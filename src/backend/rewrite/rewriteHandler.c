@@ -96,8 +96,7 @@ static List *matchLocks(CmdType event, Relation relation,
 						int varno, Query *parsetree, bool *hasUpdate);
 static Query *fireRIRrules(Query *parsetree, List *activeRIRs);
 static Bitmapset *adjust_view_column_set(Bitmapset *cols, List *targetlist);
-static Node *expand_generated_columns_internal(Node *node, Relation rel, int rt_index,
-											   RangeTblEntry *rte, int result_relation);
+static List *get_generated_columns(Relation rel, int rt_index, bool include_stored);
 
 
 /*
@@ -640,12 +639,46 @@ rewriteRuleAction(Query *parsetree,
 	if ((event == CMD_INSERT || event == CMD_UPDATE) &&
 		sub_action->commandType != CMD_UTILITY)
 	{
+		RangeTblEntry *new_rte = rt_fetch(new_varno, sub_action->rtable);
+		Relation	new_rel;
+		List	   *gen_cols;
+
+		/*
+		 * The target list does not contain entries for generated columns
+		 * (they are removed by rewriteTargetListIU), so we must build entries
+		 * for them here, so that new.gen_col can be rewritten correctly.
+		 */
+		new_rel = relation_open(new_rte->relid, NoLock);
+		gen_cols = get_generated_columns(new_rel, new_varno, true);
+		relation_close(new_rel, NoLock);
+
+		/*
+		 * The generated column expressions refer to new.attribute, so they
+		 * must be rewritten before they can be used as replacements.
+		 */
+		gen_cols = (List *)
+			ReplaceVarsFromTargetList((Node *) gen_cols,
+									  new_varno,
+									  0,
+									  new_rte,
+									  parsetree->targetList,
+									  sub_action->resultRelation,
+									  (event == CMD_UPDATE) ?
+									  REPLACEVARS_CHANGE_VARNO :
+									  REPLACEVARS_SUBSTITUTE_NULL,
+									  current_varno,
+									  &sub_action->hasSubLinks);
+
+		/*
+		 * Now rewrite new.attribute in sub_action, using both the target list
+		 * and the rewritten generated column expressions.
+		 */
 		sub_action = (Query *)
 			ReplaceVarsFromTargetList((Node *) sub_action,
 									  new_varno,
 									  0,
-									  rt_fetch(new_varno, sub_action->rtable),
-									  parsetree->targetList,
+									  new_rte,
+									  list_concat(gen_cols, parsetree->targetList),
 									  sub_action->resultRelation,
 									  (event == CMD_UPDATE) ?
 									  REPLACEVARS_CHANGE_VARNO :
@@ -2342,18 +2375,50 @@ CopyAndAddInvertedQual(Query *parsetree,
 	ChangeVarNodes(new_qual, PRS2_OLD_VARNO, rt_index, 0);
 	/* Fix references to NEW */
 	if (event == CMD_INSERT || event == CMD_UPDATE)
+	{
+		RangeTblEntry *rte = rt_fetch(rt_index, parsetree->rtable);
+		Relation	rel;
+		List	   *gen_cols;
+
+		/*
+		 * As in rewriteRuleAction, build entries for generated columns so
+		 * that new.gen_col in the rule qualification can be rewritten
+		 * correctly.
+		 */
+		rel = relation_open(rte->relid, NoLock);
+		gen_cols = get_generated_columns(rel, PRS2_NEW_VARNO, true);
+		relation_close(rel, NoLock);
+
+		/*
+		 * The generated column expressions refer to new.attribute, so they
+		 * must be rewritten before they can be used as replacements.
+		 */
+		gen_cols = (List *)
+			ReplaceVarsFromTargetList((Node *) gen_cols,
+									  PRS2_NEW_VARNO,
+									  0,
+									  rte,
+									  parsetree->targetList,
+									  parsetree->resultRelation,
+									  (event == CMD_UPDATE) ?
+									  REPLACEVARS_CHANGE_VARNO :
+									  REPLACEVARS_SUBSTITUTE_NULL,
+									  rt_index,
+									  &parsetree->hasSubLinks);
+
 		new_qual = ReplaceVarsFromTargetList(new_qual,
 											 PRS2_NEW_VARNO,
 											 0,
-											 rt_fetch(rt_index,
-													  parsetree->rtable),
-											 parsetree->targetList,
+											 rte,
+											 list_concat(gen_cols,
+														 parsetree->targetList),
 											 parsetree->resultRelation,
 											 (event == CMD_UPDATE) ?
 											 REPLACEVARS_CHANGE_VARNO :
 											 REPLACEVARS_SUBSTITUTE_NULL,
 											 rt_index,
 											 &parsetree->hasSubLinks);
+	}
 	/* And attach the fixed qual */
 	AddInvertedQual(parsetree, new_qual);
 
@@ -3790,12 +3855,19 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 * For INSERT/UPDATE (or MERGE containing INSERT/UPDATE), if the view has
 	 * the WITH CHECK OPTION, or any parent view specified WITH CASCADED CHECK
 	 * OPTION, add the quals from the view to the query's withCheckOptions
-	 * list.
+	 * list.  For INSERT ... ON CONFLICT DO UPDATE, add them to the list as a
+	 * check on the existing row as well, whether or not the view has a check
+	 * option.  (Using a WithCheckOption for a view that has none is a bit
+	 * unorthodox, but it's a good fit for ON CONFLICT.  Unlike with a plain
+	 * UPDATE, we need to throw an error when there's a conflicting row that
+	 * doesn't belong in the target view.)
 	 */
 	if (insert_or_update)
 	{
 		bool		has_wco = RelationHasCheckOption(view);
 		bool		cascaded = RelationHasCascadedCheckOption(view);
+		bool		do_conflict_check = parsetree->onConflict &&
+			parsetree->onConflict->action == ONCONFLICT_UPDATE;
 
 		/*
 		 * If the parent view has a cascaded check option, treat this view as
@@ -3818,32 +3890,23 @@ rewriteTargetView(Query *parsetree, Relation view)
 		}
 
 		/*
-		 * Add the new WithCheckOption to the start of the list, so that
+		 * New WithCheckOptions are added to the start of the list, so that
 		 * checks on inner views are run before checks on outer views, as
-		 * required by the SQL standard.
+		 * required by the SQL standard.  When there is an ON CONFLICT check,
+		 * it is prepended first, so that any real check option ends up at the
+		 * head of the list, where the parent-cascade check above expects it.
 		 *
-		 * If the new check is CASCADED, we need to add it even if this view
-		 * has no quals, since there may be quals on child views.  A LOCAL
-		 * check can be omitted if this view has no quals.
+		 * Nothing is added when this view has no quals, except for a CASCADED
+		 * check option, which is needed even then, since there may be quals
+		 * on child views.
 		 */
-		if (has_wco && (cascaded || viewquery->jointree->quals != NULL))
+		if ((has_wco || do_conflict_check) &&
+			(cascaded || viewquery->jointree->quals != NULL))
 		{
-			WithCheckOption *wco;
-
-			wco = makeNode(WithCheckOption);
-			wco->kind = WCO_VIEW_CHECK;
-			wco->relname = pstrdup(RelationGetRelationName(view));
-			wco->polname = NULL;
-			wco->qual = NULL;
-			wco->cascaded = cascaded;
-
-			parsetree->withCheckOptions = lcons(wco,
-												parsetree->withCheckOptions);
-
 			if (viewquery->jointree->quals != NULL)
 			{
-				wco->qual = (Node *) viewquery->jointree->quals;
-				ChangeVarNodes(wco->qual, base_rt_index, new_rt_index, 0);
+				ChangeVarNodes(viewquery->jointree->quals,
+							   base_rt_index, new_rt_index, 0);
 
 				/*
 				 * For INSERT, make sure that the query is marked correctly if
@@ -3853,7 +3916,41 @@ rewriteTargetView(Query *parsetree, Relation view)
 				 */
 				if (!parsetree->hasSubLinks &&
 					parsetree->commandType == CMD_INSERT)
-					parsetree->hasSubLinks = checkExprHasSubLink(wco->qual);
+					parsetree->hasSubLinks =
+						checkExprHasSubLink(viewquery->jointree->quals);
+			}
+
+			/*
+			 * For INSERT ... ON CONFLICT DO UPDATE, the conflict action acts
+			 * on an existing row, which must be visible through the view
+			 */
+			if (do_conflict_check && viewquery->jointree->quals != NULL)
+			{
+				WithCheckOption *wco = makeNode(WithCheckOption);
+
+				wco->kind = WCO_VIEW_CONFLICT_CHECK;
+				wco->relname = pstrdup(RelationGetRelationName(view));
+				wco->polname = NULL;
+				/* Copy; WCO_VIEW_CHECK entry below owns the original quals */
+				wco->qual = copyObject(viewquery->jointree->quals);
+				wco->cascaded = false;
+
+				parsetree->withCheckOptions = lcons(wco,
+													parsetree->withCheckOptions);
+			}
+
+			if (has_wco)
+			{
+				WithCheckOption *wco = makeNode(WithCheckOption);
+
+				wco->kind = WCO_VIEW_CHECK;
+				wco->relname = pstrdup(RelationGetRelationName(view));
+				wco->polname = NULL;
+				wco->qual = viewquery->jointree->quals;
+				wco->cascaded = cascaded;
+
+				parsetree->withCheckOptions = lcons(wco,
+													parsetree->withCheckOptions);
 			}
 		}
 	}
@@ -4431,36 +4528,31 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 
 
 /*
- * Expand virtual generated columns
+ * Get a table's generated columns
  *
- * If the table contains virtual generated columns, build a target list
- * containing the expanded expressions and use ReplaceVarsFromTargetList() to
- * do the replacements.
+ * If include_stored is true, both stored and virtual generated columns are
+ * returned.  Otherwise, only virtual generated columns are returned.
  *
- * Vars matching rt_index at the current query level are replaced by the
- * virtual generated column expressions from rel, if there are any.
- *
- * The caller must also provide rte, the RTE describing the target relation,
- * in order to handle any whole-row Vars referencing the target, and
- * result_relation, the index of the result relation, if this is part of an
- * INSERT/UPDATE/DELETE/MERGE query.
+ * Returns a list of TargetEntry, one for each generated column, containing
+ * the attribute numbers and generation expressions.
  */
-static Node *
-expand_generated_columns_internal(Node *node, Relation rel, int rt_index,
-								  RangeTblEntry *rte, int result_relation)
+static List *
+get_generated_columns(Relation rel, int rt_index, bool include_stored)
 {
+	List	   *gen_cols = NIL;
 	TupleDesc	tupdesc;
 
 	tupdesc = RelationGetDescr(rel);
-	if (tupdesc->constr && tupdesc->constr->has_generated_virtual)
+	if (tupdesc->constr &&
+		(tupdesc->constr->has_generated_virtual ||
+		 (include_stored && tupdesc->constr->has_generated_stored)))
 	{
-		List	   *tlist = NIL;
-
 		for (int i = 0; i < tupdesc->natts; i++)
 		{
 			Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 
-			if (attr->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+			if (attr->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ||
+				(include_stored && attr->attgenerated == ATTRIBUTE_GENERATED_STORED))
 			{
 				Node	   *defexpr;
 				TargetEntry *te;
@@ -4469,19 +4561,12 @@ expand_generated_columns_internal(Node *node, Relation rel, int rt_index,
 				ChangeVarNodes(defexpr, 1, rt_index, 0);
 
 				te = makeTargetEntry((Expr *) defexpr, i + 1, 0, false);
-				tlist = lappend(tlist, te);
+				gen_cols = lappend(gen_cols, te);
 			}
 		}
-
-		Assert(list_length(tlist) > 0);
-
-		node = ReplaceVarsFromTargetList(node, rt_index, 0, rte, tlist,
-										 result_relation,
-										 REPLACEVARS_CHANGE_VARNO, rt_index,
-										 NULL);
 	}
 
-	return node;
+	return gen_cols;
 }
 
 /*
@@ -4498,6 +4583,7 @@ expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index)
 	if (tupdesc->constr && tupdesc->constr->has_generated_virtual)
 	{
 		RangeTblEntry *rte;
+		List	   *vcols;
 
 		rte = makeNode(RangeTblEntry);
 		/* eref needs to be set, but the actual name doesn't matter */
@@ -4505,14 +4591,26 @@ expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index)
 		rte->rtekind = RTE_RELATION;
 		rte->relid = RelationGetRelid(rel);
 
-		node = expand_generated_columns_internal(node, rel, rt_index, rte, 0);
+		vcols = get_generated_columns(rel, rt_index, false);
+
+		if (vcols)
+		{
+			/*
+			 * Passing NULL for outer_hasSubLinks is safe because generation
+			 * expressions cannot contain SubLinks, so the replacement cannot
+			 * introduce any.
+			 */
+			node = ReplaceVarsFromTargetList(node, rt_index, 0, rte, vcols, 0,
+											 REPLACEVARS_CHANGE_VARNO, rt_index,
+											 NULL);
+		}
 	}
 
 	return node;
 }
 
 /*
- * Build the generation expression for the virtual generated column.
+ * Build the generation expression for a generated column.
  *
  * Error out if there is no generation expression found for the given column.
  */
@@ -4524,8 +4622,11 @@ build_generation_expression(Relation rel, int attrno)
 	Node	   *defexpr;
 	Oid			attcollid;
 
-	Assert(rd_att->constr && rd_att->constr->has_generated_virtual);
-	Assert(att_tup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL);
+	Assert(rd_att->constr &&
+		   (rd_att->constr->has_generated_virtual ||
+			rd_att->constr->has_generated_stored));
+	Assert(att_tup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ||
+		   att_tup->attgenerated == ATTRIBUTE_GENERATED_STORED);
 
 	defexpr = build_column_default(rel, attrno);
 	if (defexpr == NULL)

@@ -4325,15 +4325,18 @@ pg_identify_object(PG_FUNCTION_ARGS)
 	objidentity = getObjectIdentity(&address, true);
 
 	/* schema name */
+	nulls[1] = true;
 	if (OidIsValid(schema_oid) && objidentity)
 	{
-		const char *schema = quote_identifier(get_namespace_name(schema_oid));
+		char	   *nspname = get_namespace_name(schema_oid);
 
-		values[1] = CStringGetTextDatum(schema);
-		nulls[1] = false;
+		/* The schema may have been dropped concurrently; report it as NULL */
+		if (nspname != NULL)
+		{
+			values[1] = CStringGetTextDatum(quote_identifier(nspname));
+			nulls[1] = false;
+		}
 	}
-	else
-		nulls[1] = true;
 
 	/* object name */
 	if (objname && objidentity)
@@ -5586,7 +5589,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 
 				amForm = (Form_pg_auth_members) GETSTRUCT(tup);
 
-				appendStringInfo(&buffer, _("membership of role %s in role %s"),
+				appendStringInfo(&buffer, "membership of role %s in role %s",
 								 GetUserNameFromId(amForm->member, false),
 								 GetUserNameFromId(amForm->roleid, false));
 

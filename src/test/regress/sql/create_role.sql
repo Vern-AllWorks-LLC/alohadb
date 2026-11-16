@@ -92,6 +92,13 @@ CREATE ROLE regress_hasprivs CREATEROLE LOGIN INHERIT CONNECTION LIMIT 5;
 
 -- ok, we should be able to modify a role we created
 COMMENT ON ROLE regress_hasprivs IS 'some comment';
+SELECT shobj_description('regress_hasprivs'::regrole, 'pg_authid') IS NOT NULL AS has_comment;
+COMMENT ON ROLE regress_hasprivs IS NULL;
+SELECT shobj_description('regress_hasprivs'::regrole, 'pg_authid') IS NULL AS no_comment;
+COMMENT ON ROLE regress_hasprivs IS 'add the comment back';
+SELECT shobj_description('regress_hasprivs'::regrole, 'pg_authid') IS NOT NULL AS has_comment;
+COMMENT ON ROLE regress_hasprivs IS ''; -- empty string removes the comment, same as NULL
+SELECT shobj_description('regress_hasprivs'::regrole, 'pg_authid') IS NULL AS no_comment;
 ALTER ROLE regress_hasprivs RENAME TO regress_tenant;
 ALTER ROLE regress_tenant NOINHERIT NOLOGIN CONNECTION LIMIT 7;
 
@@ -141,12 +148,14 @@ ALTER TABLE tenant2_table OWNER TO regress_tenant2;
 -- with SET but not INHERIT, we can give away objects but not take them
 REVOKE INHERIT OPTION FOR regress_tenant2 FROM regress_createrole;
 ALTER SCHEMA regress_tenant2_schema OWNER TO regress_tenant2;
+REASSIGN OWNED BY regress_createrole TO regress_tenant2;
 ALTER TABLE tenant2_table OWNER TO regress_createrole;
 
 -- with INHERIT but not SET, we can take objects but not give them away
 GRANT regress_tenant2 TO regress_createrole WITH INHERIT TRUE, SET FALSE;
 ALTER TABLE tenant2_table OWNER TO regress_createrole;
 ALTER TABLE tenant2_table OWNER TO regress_tenant2;
+REASSIGN OWNED BY regress_createrole TO regress_tenant2;
 DROP TABLE tenant2_table;
 
 -- fail, CREATEROLE is not enough to create roles in privileged roles

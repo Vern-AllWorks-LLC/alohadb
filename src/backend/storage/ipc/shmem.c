@@ -486,42 +486,6 @@ ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 }
 
 
-/*
- * Add two Size values, checking for overflow
- */
-Size
-add_size(Size s1, Size s2)
-{
-	Size		result;
-
-	result = s1 + s2;
-	/* We are assuming Size is an unsigned type here... */
-	if (result < s1 || result < s2)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("requested shared memory size overflows size_t")));
-	return result;
-}
-
-/*
- * Multiply two Size values, checking for overflow
- */
-Size
-mul_size(Size s1, Size s2)
-{
-	Size		result;
-
-	if (s1 == 0 || s2 == 0)
-		return 0;
-	result = s1 * s2;
-	/* We are assuming Size is an unsigned type here... */
-	if (result / s2 != s1)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("requested shared memory size overflows size_t")));
-	return result;
-}
-
 /* SQL SRF showing allocated shared memory */
 Datum
 pg_get_shmem_allocations(PG_FUNCTION_ARGS)
@@ -749,7 +713,7 @@ pg_get_shmem_allocations_numa(PG_FUNCTION_ARGS)
  * If the shared segment was allocated using huge pages, returns the size of
  * a huge page. Otherwise returns the size of regular memory page.
  *
- * This should be used only after the server is started.
+ * This should be used only after shared memory has been initialized.
  */
 Size
 pg_get_shmem_pagesize(void)
@@ -764,7 +728,6 @@ pg_get_shmem_pagesize(void)
 	os_page_size = sysconf(_SC_PAGESIZE);
 #endif
 
-	Assert(IsUnderPostmaster);
 	Assert(huge_pages_status != HUGE_PAGES_UNKNOWN);
 
 	if (huge_pages_status == HUGE_PAGES_ON)

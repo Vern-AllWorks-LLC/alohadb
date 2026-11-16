@@ -108,6 +108,7 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_type.h"
 #include "executor/nodeAgg.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -604,7 +605,8 @@ scalarineqsel(PlannerInfo *root, Oid operator, bool isgt, bool iseq,
 		 * make an estimate based on comparing the constant to the table size.
 		 */
 		if (vardata->var && IsA(vardata->var, Var) &&
-			((Var *) vardata->var)->varattno == SelfItemPointerAttributeNumber)
+			((Var *) vardata->var)->varattno == SelfItemPointerAttributeNumber &&
+			consttype == TIDOID)
 		{
 			ItemPointer itemptr;
 			double		block;
@@ -2171,6 +2173,18 @@ estimate_array_length(PlannerInfo *root, Node *arrayexpr)
 		VariableStatData vardata;
 		AttStatsSlot sslot;
 		double		nelem = 0;
+
+		/*
+		 * Skip calling examine_variable for Var with varno 0, which has no
+		 * valid relation entry and would error in find_base_rel.  Such a Var
+		 * can appear when a nested set operation's output type doesn't match
+		 * the parent's expected type, because recurse_set_operations builds a
+		 * projection target list using generate_setop_tlist with varno 0, and
+		 * if the required type coercion involves an ArrayCoerceExpr, we can
+		 * be called on that Var.
+		 */
+		if (IsA(arrayexpr, Var) && ((Var *) arrayexpr)->varno == 0)
+			return 10;			/* default guess, should match scalararraysel */
 
 		examine_variable(root, arrayexpr, 0, &vardata);
 		if (HeapTupleIsValid(vardata.statsTuple))
@@ -4944,6 +4958,14 @@ convert_string_datum(Datum value, Oid typid, Oid collid, bool *failure)
 			return NULL;
 	}
 
+	/*
+	 * If we don't have a collation, act as though it's "C".  This would
+	 * normally happen only for the "char" type, but perhaps there are other
+	 * cases.
+	 */
+	if (!OidIsValid(collid))
+		return val;
+
 	mylocale = pg_newlocale_from_collation(collid);
 
 	if (!mylocale->collate_is_c)
@@ -5572,6 +5594,22 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 				/* found a match, see if we can extract pg_statistic row */
 				if (equal(node, expr))
 				{
+					Oid			exprtype = exprType(expr);
+
+					/*
+					 * Reject an expression of a pseudo-type.  An anonymous
+					 * record's typmod is only valid in the session that
+					 * built the statistics.  Such statistics can still exist
+					 * in v18 and older, built by an older minor release
+					 * before CREATE STATISTICS rejected pseudo-types.
+					 */
+					if (get_typtype(exprtype) == TYPTYPE_PSEUDO)
+						ereport(ERROR,
+								errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								errmsg("cannot interpret statistics on an expression of pseudo-type %s",
+									   format_type_be(exprtype)),
+								errhint("The extended statistics object should be dropped."));
+
 					/*
 					 * XXX Not sure if we should cache the tuple somewhere.
 					 * Now we just create a new copy every time.
@@ -5579,7 +5617,11 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 					vardata->statsTuple =
 						statext_expressions_load(info->statOid, rte->inh, pos);
 
-					vardata->freefunc = ReleaseDummy;
+					/* Nothing to release if no data found */
+					if (vardata->statsTuple != NULL)
+					{
+						vardata->freefunc = ReleaseDummy;
+					}
 
 					/*
 					 * Test if user has permission to access all rows from the

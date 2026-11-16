@@ -984,31 +984,6 @@ tarPrintf(TAR_MEMBER *th, const char *fmt,...)
 	return (int) cnt;
 }
 
-bool
-isValidTarHeader(char *header)
-{
-	int			sum;
-	int			chk = tarChecksum(header);
-
-	sum = read_tar_number(&header[TAR_OFFSET_CHECKSUM], 8);
-
-	if (sum != chk)
-		return false;
-
-	/* POSIX tar format */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar\0", 6) == 0 &&
-		memcmp(&header[TAR_OFFSET_VERSION], "00", 2) == 0)
-		return true;
-	/* GNU tar format */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar  \0", 8) == 0)
-		return true;
-	/* not-quite-POSIX format written by pre-9.3 pg_dump */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar00\0", 8) == 0)
-		return true;
-
-	return false;
-}
-
 /* Given the member, write the TAR header & copy the file */
 static void
 _tarAddFile(ArchiveHandle *AH, TAR_MEMBER *th)
@@ -1110,6 +1085,17 @@ _tarPositionTo(ArchiveHandle *AH, const char *filename)
 	{
 		pg_log_debug("skipping tar member %s", th->targetFile);
 
+		/*
+		 * If anything precedes toc.dat, we get here before the TOC has been
+		 * read.  pg_dump never writes such an archive, and calling
+		 * TocIDRequired() now would build the dump ID lookup arrays from an
+		 * empty TOC (they are never rebuilt, so later lookups would index
+		 * past their ends), so treat it as corruption.
+		 */
+		if (AH->toc->next == AH->toc)
+			pg_fatal("tar member \"%s\" precedes \"%s\" -- perhaps a corrupt archive",
+					 th->targetFile, filename);
+
 		id = atoi(th->targetFile);
 		if ((TocIDRequired(AH, id) & REQ_DATA) != 0)
 			pg_fatal("restoring data out of order is not supported in this archive format: "
@@ -1200,6 +1186,15 @@ _tarGetHeader(ArchiveHandle *AH, TAR_MEMBER *th)
 	if (chk != sum)
 		pg_fatal("corrupt tar header found in %s (expected %d, computed %d) file position %llu",
 				 tag, sum, chk, (unsigned long long) ftello(ctx->tarFH));
+
+	/*
+	 * read_tar_number() can return a value too large for a pgoff_t.  Reject a
+	 * negative result, because tarRead() would then compute a huge number of
+	 * bytes remaining and overrun its caller's buffer.
+	 */
+	if (len < 0)
+		pg_fatal("corrupt tar header found in %s (invalid file length) file position %lld",
+				 tag, (long long) ftello(ctx->tarFH));
 
 	th->targetFile = pg_strdup(tag);
 	th->fileLen = len;

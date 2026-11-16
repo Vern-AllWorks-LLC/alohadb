@@ -114,6 +114,8 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
+#include "utils/injection_point.h"
+#include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
@@ -753,11 +755,18 @@ check_exclusion_or_unique_constraint(Relation heap, Relation index,
 		{
 			TupleDesc	tupdesc = RelationGetDescr(heap);
 			Form_pg_attribute att = TupleDescAttr(tupdesc, attno - 1);
-			TypeCacheEntry *typcache = lookup_type_cache(att->atttypid, 0);
+			TypeCacheEntry *typcache = lookup_type_cache(att->atttypid,
+														 TYPECACHE_DOMAIN_BASE_INFO);
+			char		typtype;
+
+			if (OidIsValid(typcache->domainBaseType))
+				typtype = get_typtype(typcache->domainBaseType);
+			else
+				typtype = typcache->typtype;
 
 			ExecWithoutOverlapsNotEmpty(heap, att->attname,
 										values[indnkeyatts - 1],
-										typcache->typtype, att->atttypid);
+										typtype, att->atttypid);
 		}
 	}
 
@@ -898,7 +907,32 @@ retry:
 		{
 			conflict = true;
 			if (conflictTid)
+			{
 				*conflictTid = existing_slot->tts_tid;
+
+				/*
+				 * The conflicting tuple decides the outcome of INSERT ... ON
+				 * CONFLICT, so for SSI purposes it has been read, even when
+				 * nothing gets written afterwards.  The dirty snapshot used
+				 * by the scan is not an MVCC snapshot, so SSI ignored that
+				 * read.  Read the tuple again with the query snapshot to
+				 * record it. The result is of no interest here, the caller
+				 * checks visibility itself.
+				 *
+				 * Some callers, such as the logical replication apply worker,
+				 * may have not set es_snapshot.  Since such callers are not
+				 * executing INSERT ... ON CONFLICT, there is nothing to
+				 * record for SSI; skip the read in that case.
+				 */
+				if (IsolationIsSerializable() &&
+					estate->es_snapshot != InvalidSnapshot)
+				{
+					INJECTION_POINT("check-exclusion-or-unique-constraint-conflict", NULL);
+					(void) table_tuple_fetch_row_version(heap, conflictTid,
+														 estate->es_snapshot,
+														 existing_slot);
+				}
+			}
 			break;
 		}
 

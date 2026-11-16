@@ -256,6 +256,7 @@ BernoulliSamplerData
 BgWorkerStartTime
 BgwHandleStatus
 BinaryArithmFunc
+BinaryUpgradeAttributeVersions
 BinaryUpgradeClassOidItem
 BindParamCbData
 BipartiteMatchState
@@ -478,6 +479,7 @@ CompareScalarsContext
 CompareType
 CompiledExprState
 CompositeIOData
+CompositeTypeMismatchOptions
 CompositeTypeStmt
 CompoundAffixFlag
 CompressFileHandle
@@ -648,6 +650,7 @@ DiscardMode
 DiscardStmt
 DispatchOption
 DistanceValue
+DistinctColInfo
 DistinctExpr
 DoState
 DoStmt
@@ -1102,6 +1105,7 @@ GrantRoleStmt
 GrantStmt
 GrantTargetType
 Group
+GroupByColInfo
 GroupByOrdering
 GroupClause
 GroupPath
@@ -2142,6 +2146,7 @@ PatternInfo
 PatternInfoArray
 Pattern_Prefix_Status
 Pattern_Type
+PendingCancelRequest
 PendingFsyncEntry
 PendingRelDelete
 PendingRelSync
@@ -2342,6 +2347,7 @@ PsqlScanQuoteType
 PsqlScanResult
 PsqlScanState
 PsqlScanStateData
+PsqlScanStateSave
 PsqlSettings
 Publication
 PublicationActions
@@ -3094,6 +3100,7 @@ TupStoreStatus
 TupleConstr
 TupleConversionMap
 TupleDesc
+TupleDescVersionData
 TupleHashEntry
 TupleHashEntryData
 TupleHashIterator
@@ -3665,7 +3672,9 @@ gistxlogPageDelete
 gistxlogPageReuse
 gistxlogPageSplit
 gistxlogPageUpdate
+grouping_eqop_callback
 grouping_sets_data
+grouping_walker_ctx
 growable_trgm_array
 gseg_picksplit_item
 gss_OID_set
@@ -3678,6 +3687,7 @@ gss_key_value_set_desc
 gss_name_t
 gtrgm_consistent_cache
 gzFile
+having_grouping_ctx
 hbaPort
 heap_page_items_state
 help_handler
@@ -3946,6 +3956,7 @@ post_parse_analyze_hook_type
 postprocess_result_function
 pqbool
 pqsigfunc
+preprocess_subquery_phvs_context
 printQueryOpt
 printTableContent
 printTableFooter
@@ -3969,6 +3980,7 @@ pthread_mutex_t
 pthread_once_t
 pthread_t
 ptrdiff_t
+publication_tables_state
 published_rel
 pull_var_clause_context
 pull_varattnos_context

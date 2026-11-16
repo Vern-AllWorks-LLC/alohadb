@@ -304,12 +304,13 @@ static bool FatalError = false; /* T if recovering from backend crash */
  *
  * When the startup process is ready to start archive recovery, it signals the
  * postmaster, and we switch to PM_RECOVERY state. The background writer and
- * checkpointer are launched, while the startup process continues applying WAL.
- * If Hot Standby is enabled, then, after reaching a consistent point in WAL
- * redo, startup process signals us again, and we switch to PM_HOT_STANDBY
- * state and begin accepting connections to perform read-only queries.  When
- * archive recovery is finished, the startup process exits with exit code 0
- * and we switch to PM_RUN state.
+ * checkpointer are already running (as these are launched during PM_STARTUP),
+ * and the startup process continues applying WAL.  If Hot Standby is enabled,
+ * then, after reaching a consistent point in WAL redo, startup process
+ * signals us again, and we switch to PM_HOT_STANDBY state and begin accepting
+ * connections to perform read-only queries.  When archive recovery is
+ * finished, the startup process exits with exit code 0 and we switch to
+ * PM_RUN state.
  *
  * Normal child backends can only be launched when we are in PM_RUN or
  * PM_HOT_STANDBY state.  (connsAllowed can also restrict launching.)
@@ -367,8 +368,6 @@ static time_t AbortStartTime = 0;
 
 /* Length of said timeout */
 #define SIGKILL_CHILDREN_AFTER_SECS		5
-
-static bool ReachedNormalRunning = false;	/* T if we've reached PM_RUN */
 
 bool		ClientAuthInProgress = false;	/* T during new-client
 											 * authentication */
@@ -430,6 +429,7 @@ static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
+static void HandleFatalError(QuitSignalReason reason, bool consider_sigabrt);
 static void LogChildExit(int lev, const char *procname,
 						 int pid, int exitstatus);
 static void PostmasterStateMachine(void);
@@ -2287,29 +2287,13 @@ process_pm_child_exit(void)
 			}
 
 			/*
-			 * Unexpected exit of startup process (including FATAL exit)
-			 * during PM_STARTUP is treated as catastrophic. There are no
-			 * other processes running yet, so we can just exit.
-			 */
-			if (pmState == PM_STARTUP &&
-				StartupStatus != STARTUP_SIGNALED &&
-				!EXIT_STATUS_0(exitstatus))
-			{
-				LogChildExit(LOG, _("startup process"),
-							 pid, exitstatus);
-				ereport(LOG,
-						(errmsg("aborting startup due to startup process failure")));
-				ExitPostmaster(1);
-			}
-
-			/*
-			 * After PM_STARTUP, any unexpected exit (including FATAL exit) of
-			 * the startup process is catastrophic, so kill other children,
-			 * and set StartupStatus so we don't try to reinitialize after
-			 * they're gone.  Exception: if StartupStatus is STARTUP_SIGNALED,
-			 * then we previously sent the startup process a SIGQUIT; so
-			 * that's probably the reason it died, and we do want to try to
-			 * restart in that case.
+			 * Any unexpected exit (including FATAL exit) of the startup
+			 * process is catastrophic, so kill other children, and set
+			 * StartupStatus so we don't try to reinitialize after they're
+			 * gone.  Exception: if StartupStatus is STARTUP_SIGNALED, then we
+			 * previously sent the startup process a SIGQUIT; so that's
+			 * probably the reason it died, and we do want to try to restart
+			 * in that case.
 			 *
 			 * This stanza also handles the case where we sent a SIGQUIT
 			 * during PM_STARTUP due to some dead-end child crashing: in that
@@ -2330,8 +2314,25 @@ process_pm_child_exit(void)
 				}
 				else
 					StartupStatus = STARTUP_CRASHED;
-				HandleChildCrash(pid, exitstatus,
-								 _("startup process"));
+
+				/*
+				 * If FatalError is already set, we are reinitializing after a
+				 * previous crash, and HandleChildCrash() would do nothing,
+				 * leaving the state machine stuck at PM_STARTUP.  Give up,
+				 * signal the remaining children and head for PM_NO_CHILDREN,
+				 * where STARTUP_CRASHED makes us exit.
+				 */
+				if (StartupStatus == STARTUP_CRASHED &&
+					FatalError && Shutdown != ImmediateShutdown)
+				{
+					LogChildExit(LOG, _("startup process"), pid, exitstatus);
+					ereport(LOG,
+							(errmsg("aborting startup due to startup process failure")));
+					HandleFatalError(PMQUIT_FOR_CRASH, true);
+				}
+				else
+					HandleChildCrash(pid, exitstatus,
+									 _("startup process"));
 				continue;
 			}
 
@@ -2341,7 +2342,6 @@ process_pm_child_exit(void)
 			StartupStatus = STARTUP_NOT_RUNNING;
 			FatalError = false;
 			AbortStartTime = 0;
-			ReachedNormalRunning = true;
 			UpdatePMState(PM_RUN);
 			connsAllowed = true;
 
@@ -2704,15 +2704,13 @@ CleanupBackend(PMChild *bp,
  * happened. Commonly the caller will have logged the reason for entering
  * FatalError state.
  *
- * This should only be called when not already in FatalError or
- * ImmediateShutdown state.
+ * This should only be called when not already in ImmediateShutdown state.
  */
 static void
 HandleFatalError(QuitSignalReason reason, bool consider_sigabrt)
 {
 	int			sigtosend;
 
-	Assert(!FatalError);
 	Assert(Shutdown != ImmediateShutdown);
 
 	SetQuitSignalReason(reason);
@@ -2744,12 +2742,9 @@ HandleFatalError(QuitSignalReason reason, bool consider_sigabrt)
 			/* shouldn't have any children */
 			Assert(false);
 			break;
-		case PM_STARTUP:
-			/* should have been handled in process_pm_child_exit */
-			Assert(false);
-			break;
 
 			/* wait for children to die */
+		case PM_STARTUP:
 		case PM_RECOVERY:
 		case PM_HOT_STANDBY:
 		case PM_RUN:

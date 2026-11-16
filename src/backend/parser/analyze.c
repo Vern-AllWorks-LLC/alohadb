@@ -573,6 +573,14 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 										 ACL_DELETE);
 	nsitem = pstate->p_target_nsitem;
 
+	/* disallow DELETE ... WHERE CURRENT OF on a view */
+	if (stmt->whereClause &&
+		IsA(stmt->whereClause, CurrentOfExpr) &&
+		pstate->p_target_relation->rd_rel->relkind == RELKIND_VIEW)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("WHERE CURRENT OF on a view is not implemented"));
+
 	/* there's no DISTINCT in DELETE */
 	qry->distinctClause = NIL;
 
@@ -1106,11 +1114,17 @@ transformInsertRow(ParseState *pstate, List *exprlist,
 		ResTarget  *col = lfirst_node(ResTarget, icols);
 		int			attno = lfirst_int(attnos);
 
+		/*
+		 * Pass a copy of the raw indirection, since transforming it may
+		 * modify it in place (a SubLink in a subscript, for instance), and
+		 * for a multi-row VALUES list we are called with the same target
+		 * columns for each row and then once more.
+		 */
 		expr = transformAssignedExpr(pstate, expr,
 									 EXPR_KIND_INSERT_TARGET,
 									 col->name,
 									 attno,
-									 col->indirection,
+									 copyObject(col->indirection),
 									 col->location);
 
 		if (strip_indirection)
@@ -2483,6 +2497,14 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 										 true,
 										 ACL_UPDATE);
 	nsitem = pstate->p_target_nsitem;
+
+	/* disallow UPDATE ... WHERE CURRENT OF on a view */
+	if (stmt->whereClause &&
+		IsA(stmt->whereClause, CurrentOfExpr) &&
+		pstate->p_target_relation->rd_rel->relkind == RELKIND_VIEW)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("WHERE CURRENT OF on a view is not implemented"));
 
 	/* subqueries in FROM cannot access the result relation */
 	nsitem->p_lateral_only = true;

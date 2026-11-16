@@ -28,6 +28,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -176,7 +177,8 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 				 * would need to expand them somewhere around here), but for
 				 * now we keep them consistent with the stored variant.
 				 */
-				if (TupleDescAttr(RelationGetDescr(rel), attno - 1)->attgenerated)
+				if (attno > 0 &&
+					TupleDescAttr(RelationGetDescr(rel), attno - 1)->attgenerated)
 					ereport(ERROR,
 							errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 							errmsg("generated columns are not supported in COPY FROM WHERE conditions"),
@@ -188,6 +190,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 
 			whereClause = (Node *) canonicalize_qual((Expr *) whereClause, false);
 			whereClause = (Node *) make_ands_implicit((Expr *) whereClause);
+			fix_opfuncids(whereClause);
 		}
 
 		tupDesc = RelationGetDescr(rel);

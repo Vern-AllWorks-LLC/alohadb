@@ -243,6 +243,17 @@ DELETE FROM foo WHERE f1 = 5
   RETURNING old.tableoid::regclass, old.ctid, old.*,
             new.tableoid::regclass, new.ctid, new.*, *;
 
+-- Parenthesized OLD and NEW
+INSERT INTO foo VALUES (6, 'paren-test', 60, 600)
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+UPDATE foo SET f4 = 700 WHERE f1 = 6
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+DELETE FROM foo WHERE f1 = 6
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+
 -- RETURNING OLD and NEW from subquery
 EXPLAIN (verbose, costs off)
 INSERT INTO foo VALUES (5, 'subquery test')
@@ -408,3 +419,27 @@ END;
 
 \sf foo_update
 DROP FUNCTION foo_update;
+
+-- Deparsing must print the OLD/NEW aliases of the ModifyTable that owns a
+-- RETURNING list also inside its SubPlans, even when a data-modifying CTE
+-- has set different aliases.
+CREATE TABLE returning_e1 (k int, c int);
+CREATE TABLE returning_e2 (k int, c int);
+
+EXPLAIN (VERBOSE, COSTS OFF)
+WITH x AS (UPDATE returning_e2 SET c = c + 1
+           RETURNING WITH (OLD AS o, NEW AS n) o.k)
+UPDATE returning_e1 SET c = c + 1
+  RETURNING WITH (OLD AS p, NEW AS q) p.c,
+    (SELECT count(*) FROM returning_e2 WHERE returning_e2.c = p.c) AS m,
+    (SELECT count(*) FROM returning_e2 WHERE returning_e2.c = q.c) AS m2;
+
+-- likewise when a SubPlan compares values returned by the CTE
+EXPLAIN (VERBOSE, COSTS OFF)
+WITH x AS (UPDATE returning_e2 SET c = c + 1
+           RETURNING WITH (OLD AS o, NEW AS n) n.k, o.c AS oc)
+UPDATE returning_e1 SET c = c + 1
+  RETURNING WITH (OLD AS p) p.c,
+    (SELECT count(*) FROM x WHERE x.oc = p.c) AS m;
+
+DROP TABLE returning_e1, returning_e2;

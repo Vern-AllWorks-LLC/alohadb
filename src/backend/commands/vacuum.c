@@ -1187,7 +1187,7 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 		ereport(WARNING,
 				(errmsg("cutoff for freezing multixacts is far in the past"),
 				 errhint("Close open transactions soon to avoid wraparound problems.\n"
-						 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+						 "You might also need to commit or roll back old prepared transactions.")));
 
 	/*
 	 * Determine the minimum freeze age to use: as specified by the caller, or
@@ -2444,6 +2444,14 @@ void
 vacuum_delay_point(bool is_analyze)
 {
 	double		msec = 0;
+
+	/*
+	 * If we're holding locks or holding interrupts for some other reason,
+	 * don't sleep, because we don't want to hold locks any longer than
+	 * necessary.
+	 */
+	if (!INTERRUPTS_CAN_BE_PROCESSED())
+		return;
 
 	/* Always check for interrupts */
 	CHECK_FOR_INTERRUPTS();

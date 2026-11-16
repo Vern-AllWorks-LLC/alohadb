@@ -421,6 +421,10 @@ nameeqfast(Datum a, Datum b)
 	char	   *ca = NameStr(*DatumGetName(a));
 	char	   *cb = NameStr(*DatumGetName(b));
 
+	/*
+	 * Catalogs only use deterministic collations, so ignore column collation
+	 * and use fast path.
+	 */
 	return strncmp(ca, cb, NAMEDATALEN) == 0;
 }
 
@@ -429,6 +433,10 @@ namehashfast(Datum datum)
 {
 	char	   *key = NameStr(*DatumGetName(datum));
 
+	/*
+	 * Catalogs only use deterministic collations, so ignore column collation
+	 * and use fast path.
+	 */
 	return hash_any((unsigned char *) key, strlen(key));
 }
 
@@ -460,17 +468,20 @@ static bool
 texteqfast(Datum a, Datum b)
 {
 	/*
-	 * The use of DEFAULT_COLLATION_OID is fairly arbitrary here.  We just
-	 * want to take the fast "deterministic" path in texteq().
+	 * Catalogs only use deterministic collations, so ignore column collation
+	 * and use "C" locale for efficiency.
 	 */
-	return DatumGetBool(DirectFunctionCall2Coll(texteq, DEFAULT_COLLATION_OID, a, b));
+	return DatumGetBool(DirectFunctionCall2Coll(texteq, C_COLLATION_OID, a, b));
 }
 
 static uint32
 texthashfast(Datum datum)
 {
-	/* analogously here as in texteqfast() */
-	return DatumGetInt32(DirectFunctionCall1Coll(hashtext, DEFAULT_COLLATION_OID, datum));
+	/*
+	 * Catalogs only use deterministic collations, so ignore column collation
+	 * and use "C" locale for efficiency.
+	 */
+	return DatumGetInt32(DirectFunctionCall1Coll(hashtext, C_COLLATION_OID, datum));
 }
 
 static bool
@@ -1295,7 +1306,7 @@ RehashCatCacheLists(CatCache *cp)
  *
  * Call CatalogCacheInitializeCache() if not yet done.
  */
-pg_attribute_always_inline
+pg_always_inline
 static void
 ConditionalCatalogCacheInitializeCache(CatCache *cache)
 {

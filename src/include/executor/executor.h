@@ -688,6 +688,7 @@ extern void ExecInitRangeTable(EState *estate, List *rangeTable, List *permInfos
 							   Bitmapset *unpruned_relids);
 extern void ExecCloseRangeTableRelations(EState *estate);
 extern void ExecCloseResultRelations(EState *estate);
+extern void ExecCloseTrigTargetRelations(EState *estate);
 
 static inline RangeTblEntry *
 exec_rt_fetch(Index rti, EState *estate)
@@ -759,6 +760,11 @@ extern bool RelationFindReplTupleByIndex(Relation rel, Oid idxoid,
 										 LockTupleMode lockmode,
 										 TupleTableSlot *searchslot,
 										 TupleTableSlot *outslot);
+extern bool RelationFindReplTupleByIndexExt(Relation rel, Oid idxoid,
+											bool skipduplicates,
+											LockTupleMode lockmode,
+											TupleTableSlot *searchslot,
+											TupleTableSlot *outslot);
 extern bool RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode,
 									 TupleTableSlot *searchslot, TupleTableSlot *outslot);
 
@@ -774,6 +780,8 @@ extern void CheckCmdReplicaIdentity(Relation rel, CmdType cmd);
 
 extern void CheckSubscriptionRelkind(char relkind, const char *nspname,
 									 const char *relname);
+extern void CheckSubscriptionTargetRel(Oid relid, const char *nspname,
+									   const char *relname);
 
 /*
  * prototypes from functions in nodeModifyTable.c

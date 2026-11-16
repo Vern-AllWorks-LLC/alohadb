@@ -99,6 +99,18 @@ static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
 									   int numrows, HeapTuple *rows,
 									   VacAttrStats **stats, int stattarget);
 
+static inline void
+report_ext_stats_not_computed(Relation onerel, StatExtEntry *stat)
+{
+	if (!AmAutoVacuumWorkerProcess())
+		ereport(WARNING,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("statistics object \"%s.%s\" could not be computed for relation \"%s.%s\"",
+						stat->schema, stat->name,
+						get_namespace_name(onerel->rd_rel->relnamespace),
+						RelationGetRelationName(onerel)),
+				 errtable(onerel)));
+}
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -162,6 +174,25 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		StatsBuildData *data;
 
 		/*
+		 * Error out on a statistics object that has an expression of a
+		 * pseudo-type.  Such an object can still exist in v18 and older,
+		 * built by an older minor release, but its statistics can't be read,
+		 * and the object should be dropped.
+		 */
+		foreach(lc2, stat->exprs)
+		{
+			if (get_typtype(exprType((Node *) lfirst(lc2))) == TYPTYPE_PSEUDO)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("statistics object \"%s.%s\" could not be computed for relation \"%s.%s\"",
+								stat->schema, stat->name,
+								get_namespace_name(onerel->rd_rel->relnamespace),
+								RelationGetRelationName(onerel)),
+						 errhint("The extended statistics object should be dropped."),
+						 errtable(onerel)));
+		}
+
+		/*
 		 * Check if we can build these stats based on the column analyzed. If
 		 * not, report this fact (except in autovacuum) and move on.
 		 */
@@ -169,14 +200,7 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 									  natts, vacattrstats);
 		if (!stats)
 		{
-			if (!AmAutoVacuumWorkerProcess())
-				ereport(WARNING,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("statistics object \"%s.%s\" could not be computed for relation \"%s.%s\"",
-								stat->schema, stat->name,
-								get_namespace_name(onerel->rd_rel->relnamespace),
-								RelationGetRelationName(onerel)),
-						 errtable(onerel)));
+			report_ext_stats_not_computed(onerel, stat);
 			continue;
 		}
 
@@ -195,6 +219,11 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 
 		/* evaluate expressions (if the statistics object has any) */
 		data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+		if (!data)
+		{
+			report_ext_stats_not_computed(onerel, stat);
+			continue;
+		}
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -217,6 +246,12 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 					elog(ERROR, "requested expression stats, but there are no expressions");
 
 				exprdata = build_expr_data(stat->exprs, stattarget);
+				if (!exprdata)
+				{
+					report_ext_stats_not_computed(onerel, stat);
+					data = NULL;
+					break;
+				}
 				nexprs = list_length(stat->exprs);
 
 				compute_expr_stats(onerel, exprdata, nexprs, rows, numrows);
@@ -224,6 +259,9 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 				exprstats = serialize_expr_stats(exprdata, nexprs);
 			}
 		}
+
+		if (!data)
+			continue;
 
 		/* store the statistics in the catalog */
 		statext_store(stat->statOid, inh,
@@ -735,6 +773,16 @@ lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 		Node	   *expr = (Node *) lfirst(lc);
 
 		stats[i] = examine_attribute(expr);
+
+		/*
+		 * If the expression has been found as non-analyzable, give up.  We
+		 * will not be able to build extended stats with it.
+		 */
+		if (stats[i] == NULL)
+		{
+			pfree(stats);
+			return NULL;
+		}
 
 		/*
 		 * XXX We need tuple descriptor later, and we just grab it from
@@ -2260,6 +2308,11 @@ build_expr_data(List *exprs, int stattarget)
 
 		thisdata->expr = expr;
 		thisdata->vacattrstat = examine_expression(expr, stattarget);
+		if (thisdata->vacattrstat == NULL)
+		{
+			pfree(exprdata);
+			return NULL;
+		}
 		idx++;
 	}
 
@@ -2396,6 +2449,9 @@ serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 /*
  * Loads pg_statistic record from expression statistics for expression
  * identified by the supplied index.
+ *
+ * Returns the pg_statistic record found, or NULL if there is no statistics
+ * data to use.
  */
 HeapTuple
 statext_expressions_load(Oid stxoid, bool inh, int idx)
@@ -2424,6 +2480,13 @@ statext_expressions_load(Oid stxoid, bool inh, int idx)
 
 	deconstruct_expanded_array(eah);
 
+	if (eah->dnulls && eah->dnulls[idx])
+	{
+		/* No data found for this expression, give up. */
+		ReleaseSysCache(htup);
+		return NULL;
+	}
+
 	td = DatumGetHeapTupleHeader(eah->dvalues[idx]);
 
 	/* Build a temporary HeapTuple control structure */
@@ -2443,6 +2506,8 @@ statext_expressions_load(Oid stxoid, bool inh, int idx)
  * Evaluate the expressions, so that we can use the results to build
  * all the requested statistics types. This matters especially for
  * expensive expressions, of course.
+ *
+ * Returns NULL if an expression cannot be analyzed.
  */
 static StatsBuildData *
 make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
@@ -2531,6 +2596,12 @@ make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
 
 		result->attnums[idx] = k;
 		result->stats[idx] = examine_expression(expr, stattarget);
+
+		if (result->stats[idx] == NULL)
+		{
+			pfree(result);
+			return NULL;
+		}
 
 		idx++;
 		k--;

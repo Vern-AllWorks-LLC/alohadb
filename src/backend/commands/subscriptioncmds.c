@@ -440,6 +440,32 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 }
 
 /*
+ * Append a suitably-quoted identifier or string literal to buf.
+ * "quote" should be either a double-quote or single-quote character.
+ *
+ * Caution: this quoting logic is sufficient for identifiers and literals
+ * in the replication grammar, but not always in regular SQL.  Specifically,
+ * it'd fail for a string literal if standard_conforming_strings is off.
+ */
+static void
+appendQuotedString(StringInfo buf, const char *str, char quote)
+{
+	appendStringInfoChar(buf, quote);
+	while (*str)
+	{
+		char		c = *str++;
+
+		if (c == quote)
+			appendStringInfoChar(buf, c);
+		appendStringInfoChar(buf, c);
+	}
+	appendStringInfoChar(buf, quote);
+}
+
+#define appendQuotedIdentifier(b, s)	appendQuotedString(b, s, '"')
+#define appendQuotedLiteral(b, s)		appendQuotedString(b, s, '\'')
+
+/*
  * Check that the specified publications are present on the publisher.
  */
 static void
@@ -742,9 +768,9 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 
 				relid = RangeVarGetRelid(rv, AccessShareLock, false);
 
-				/* Check for supported relkind. */
-				CheckSubscriptionRelkind(get_rel_relkind(relid),
-										 rv->schemaname, rv->relname);
+				/* Check that the relation can be replicated into. */
+				CheckSubscriptionTargetRel(relid, rv->schemaname,
+										   rv->relname);
 
 				AddSubscriptionRelState(subid, relid, table_state,
 										InvalidXLogRecPtr, true);
@@ -907,9 +933,8 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 
 			relid = RangeVarGetRelid(rv, AccessShareLock, false);
 
-			/* Check for supported relkind. */
-			CheckSubscriptionRelkind(get_rel_relkind(relid),
-									 rv->schemaname, rv->relname);
+			/* Check that the relation can be replicated into. */
+			CheckSubscriptionTargetRel(relid, rv->schemaname, rv->relname);
 
 			pubrel_local_oids[off++] = relid;
 
@@ -1300,12 +1325,19 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								 errmsg("cannot disable \"two_phase\" when prepared transactions exist"),
 								 errhint("Resolve these transactions and try again.")));
 
-					/* Change system catalog accordingly */
-					values[Anum_pg_subscription_subtwophasestate - 1] =
-						CharGetDatum(opts.twophase ?
-									 LOGICALREP_TWOPHASE_STATE_PENDING :
-									 LOGICALREP_TWOPHASE_STATE_DISABLED);
-					replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+					/*
+					 * Change system catalog accordingly, but do not reset the
+					 * state to PENDING if two_phase is already enabled.
+					 */
+					if (!(opts.twophase &&
+						  sub->twophasestate == LOGICALREP_TWOPHASE_STATE_ENABLED))
+					{
+						values[Anum_pg_subscription_subtwophasestate - 1] =
+							CharGetDatum(opts.twophase ?
+										 LOGICALREP_TWOPHASE_STATE_PENDING :
+										 LOGICALREP_TWOPHASE_STATE_DISABLED);
+						replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+					}
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_FAILOVER))
@@ -1921,7 +1953,9 @@ ReplicationSlotDropAtPubNode(WalReceiverConn *wrconn, char *slotname, bool missi
 	load_file("libpqwalreceiver", false);
 
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "DROP_REPLICATION_SLOT %s WAIT", quote_identifier(slotname));
+	appendStringInfoString(&cmd, "DROP_REPLICATION_SLOT ");
+	appendQuotedIdentifier(&cmd, slotname);
+	appendStringInfoString(&cmd, " WAIT");
 
 	PG_TRY();
 	{
@@ -2136,11 +2170,28 @@ check_publications_origin(WalReceiverConn *wrconn, List *publications,
 	for (i = 0; i < subrel_count; i++)
 	{
 		Oid			relid = subrel_local_oids[i];
-		char	   *schemaname = get_namespace_name(get_rel_namespace(relid));
-		char	   *tablename = get_rel_name(relid);
+		char	   *schemaname;
+		char	   *tablename;
+		char	   *schemaname_lit;
+		char	   *tablename_lit;
 
-		appendStringInfo(&cmd, "AND NOT (N.nspname = '%s' AND C.relname = '%s')\n",
-						 schemaname, tablename);
+		/* The table may have been dropped concurrently; skip if gone. */
+		tablename = get_rel_name(relid);
+		if (tablename == NULL)
+			continue;
+
+		schemaname = get_namespace_name(get_rel_namespace(relid));
+		if (schemaname == NULL)
+			continue;
+
+		schemaname_lit = quote_literal_cstr(schemaname);
+		tablename_lit = quote_literal_cstr(tablename);
+
+		appendStringInfo(&cmd, "AND NOT (N.nspname = %s AND C.relname = %s)\n",
+						 schemaname_lit, tablename_lit);
+
+		pfree(schemaname_lit);
+		pfree(tablename_lit);
 	}
 
 	res = walrcv_exec(wrconn, cmd.data, 1, tableRow);

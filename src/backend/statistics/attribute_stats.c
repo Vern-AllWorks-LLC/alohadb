@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/relation.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_collation.h"
@@ -93,8 +94,8 @@ enum clear_attribute_stats_argnum
 
 static struct StatsArgInfo cleararginfo[] =
 {
-	[C_ATTRELSCHEMA_ARG] = {"relation", TEXTOID},
-	[C_ATTRELNAME_ARG] = {"relation", TEXTOID},
+	[C_ATTRELSCHEMA_ARG] = {"schemaname", TEXTOID},
+	[C_ATTRELNAME_ARG] = {"relname", TEXTOID},
 	[C_ATTNAME_ARG] = {"attname", TEXTOID},
 	[C_INHERITED_ARG] = {"inherited", BOOLOID},
 	[C_NUM_ATTRIBUTE_STATS_ARGS] = {0}
@@ -104,10 +105,12 @@ static bool attribute_statistics_update(FunctionCallInfo fcinfo);
 static Node *get_attr_expr(Relation rel, int attnum);
 static void get_attr_stat_type(Oid reloid, AttrNumber attnum,
 							   Oid *atttypid, int32 *atttypmod,
-							   char *atttyptype, Oid *atttypcoll,
+							   TypeCacheEntry **basetypcache, Oid *atttypcoll,
 							   Oid *eq_opr, Oid *lt_opr);
-static bool get_elem_stat_type(Oid atttypid, char atttyptype,
+static bool get_elem_stat_type(TypeCacheEntry *basetypcache,
 							   Oid *elemtypid, Oid *elem_eq_opr);
+static bool get_range_stat_type(TypeCacheEntry *basetypcache,
+								Oid *rangetypid);
 static Datum text_to_stavalues(const char *staname, FmgrInfo *array_in, Datum d,
 							   Oid typid, int32 typmod, bool *ok);
 static void set_stats_slot(Datum *values, bool *nulls, bool *replaces,
@@ -148,17 +151,20 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 	Oid			locked_table = InvalidOid;
 
 	Relation	starel;
+	Relation	targetrel;
 	HeapTuple	statup;
 
 	Oid			atttypid = InvalidOid;
 	int32		atttypmod;
-	char		atttyptype;
+	TypeCacheEntry *basetypcache;
 	Oid			atttypcoll = InvalidOid;
 	Oid			eq_opr = InvalidOid;
 	Oid			lt_opr = InvalidOid;
 
 	Oid			elemtypid = InvalidOid;
 	Oid			elem_eq_opr = InvalidOid;
+
+	Oid			bounds_typid = InvalidOid;
 
 	FmgrInfo	array_in_fn;
 
@@ -243,8 +249,8 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 	inherited = PG_GETARG_BOOL(INHERITED_ARG);
 
 	/*
-	 * Check argument sanity. If some arguments are unusable, emit a WARNING
-	 * and set the corresponding argument to NULL in fcinfo.
+	 * Check argument sanity.  If some arguments are unusable, emit a WARNING
+	 * and skip the corresponding statistics kind, reporting back a failure.
 	 */
 
 	if (!stats_check_arg_array(fcinfo, attarginfo, MOST_COMMON_FREQS_ARG))
@@ -290,14 +296,13 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 	/* derive information from attribute */
 	get_attr_stat_type(reloid, attnum,
 					   &atttypid, &atttypmod,
-					   &atttyptype, &atttypcoll,
+					   &basetypcache, &atttypcoll,
 					   &eq_opr, &lt_opr);
 
 	/* if needed, derive element type */
 	if (do_mcelem || do_dechist)
 	{
-		if (!get_elem_stat_type(atttypid, atttyptype,
-								&elemtypid, &elem_eq_opr))
+		if (!get_elem_stat_type(basetypcache, &elemtypid, &elem_eq_opr))
 		{
 			ereport(WARNING,
 					(errmsg("could not determine element type of column \"%s\"", attname),
@@ -328,7 +333,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 	/* only range types can have range stats */
 	if ((do_range_length_histogram || do_bounds_histogram) &&
-		!(atttyptype == TYPTYPE_RANGE || atttyptype == TYPTYPE_MULTIRANGE))
+		!get_range_stat_type(basetypcache, &bounds_typid))
 	{
 		ereport(WARNING,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -340,6 +345,16 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 		do_range_length_histogram = false;
 		result = false;
 	}
+
+	/*
+	 * Parsing the input arrays below can run user-defined code (such as a
+	 * domain's CHECK constraint) that alters the column's type within our own
+	 * transaction, which our lock does not prevent.  Hold the relation open
+	 * so that such a reentrant ALTER TABLE is rejected by
+	 * CheckTableNotInUse().  NoLock is fine here as we already hold
+	 * ShareUpdateExclusiveLock on it.
+	 */
+	targetrel = relation_open(reloid, NoLock);
 
 	fmgr_info(F_ARRAY_IN, &array_in_fn);
 
@@ -384,10 +399,27 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
-						   STATISTIC_KIND_MCV,
-						   eq_opr, atttypcoll,
-						   stanumbers, false, stavalues, false);
+			ArrayType  *vals_arr = DatumGetArrayTypeP(stavalues);
+			ArrayType  *nums_arr = DatumGetArrayTypeP(stanumbers);
+			int			nvals = ARR_DIMS(vals_arr)[0];
+			int			nnums = ARR_DIMS(nums_arr)[0];
+
+			if (nvals != nnums)
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("could not parse \"%s\": incorrect number of elements (same as \"%s\" required)",
+								"most_common_vals",
+								"most_common_freqs")));
+				result = false;
+			}
+			else
+			{
+				set_stats_slot(values, nulls, replaces,
+							   STATISTIC_KIND_MCV,
+							   eq_opr, atttypcoll,
+							   stanumbers, false, stavalues, false);
+			}
 		}
 		else
 			result = false;
@@ -476,10 +508,12 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 		bool		converted = false;
 		Datum		stavalues;
 
+		Assert(OidIsValid(bounds_typid));
+
 		stavalues = text_to_stavalues("range_bounds_histogram",
 									  &array_in_fn,
 									  PG_GETARG_DATUM(RANGE_BOUNDS_HISTOGRAM_ARG),
-									  atttypid, atttypmod,
+									  bounds_typid, atttypmod,
 									  &converted);
 
 		if (converted)
@@ -520,11 +554,25 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 			result = false;
 	}
 
+	/*
+	 * The user-defined code run while parsing the arrays above can also drop
+	 * the column itself through a dependency (e.g. DROP DOMAIN ... CASCADE),
+	 * which holding the relation open does not prevent.  The column must not
+	 * go away in the middle of restoring its statistics, so error out, which
+	 * also rolls back the drop.
+	 */
+	if (!SearchSysCacheExistsAttName(reloid, attname))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("could not restore statistics for column \"%s\": it was dropped during the import",
+						attname)));
+
 	upsert_pg_statistic(starel, statup, values, nulls, replaces);
 
 	if (HeapTupleIsValid(statup))
 		ReleaseSysCache(statup);
 	table_close(starel, RowExclusiveLock);
+	relation_close(targetrel, NoLock);
 
 	return result;
 }
@@ -573,18 +621,20 @@ get_attr_expr(Relation rel, int attnum)
 
 /*
  * Derive type information from the attribute.
+ *
+ * *atttypid and *atttypmod describe the type as declared.  *basetypcache is
+ * the cache entry of the base type behind any domain.
  */
 static void
 get_attr_stat_type(Oid reloid, AttrNumber attnum,
 				   Oid *atttypid, int32 *atttypmod,
-				   char *atttyptype, Oid *atttypcoll,
+				   TypeCacheEntry **basetypcache, Oid *atttypcoll,
 				   Oid *eq_opr, Oid *lt_opr)
 {
 	Relation	rel = relation_open(reloid, AccessShareLock);
 	Form_pg_attribute attr;
 	HeapTuple	atup;
 	Node	   *expr;
-	TypeCacheEntry *typcache;
 
 	atup = SearchSysCache2(ATTNUM, ObjectIdGetDatum(reloid),
 						   Int16GetDatum(attnum));
@@ -630,24 +680,23 @@ get_attr_stat_type(Oid reloid, AttrNumber attnum,
 	}
 	ReleaseSysCache(atup);
 
-	/*
-	 * If it's a multirange, step down to the range type, as is done by
-	 * multirange_typanalyze().
-	 */
-	if (type_is_multirange(*atttypid))
-		*atttypid = get_multirange_range(*atttypid);
-
 	/* finds the right operators even if atttypid is a domain */
-	typcache = lookup_type_cache(*atttypid, TYPECACHE_LT_OPR | TYPECACHE_EQ_OPR);
-	*atttyptype = typcache->typtype;
-	*eq_opr = typcache->eq_opr;
-	*lt_opr = typcache->lt_opr;
+	*basetypcache = lookup_type_cache(*atttypid, TYPECACHE_LT_OPR |
+									  TYPECACHE_EQ_OPR |
+									  TYPECACHE_DOMAIN_BASE_INFO);
+	if (OidIsValid((*basetypcache)->domainBaseType))
+		*basetypcache = lookup_type_cache((*basetypcache)->domainBaseType,
+										  TYPECACHE_LT_OPR |
+										  TYPECACHE_EQ_OPR);
+
+	*eq_opr = (*basetypcache)->eq_opr;
+	*lt_opr = (*basetypcache)->lt_opr;
 
 	/*
 	 * Special case: collation for tsvector is DEFAULT_COLLATION_OID. See
 	 * compute_tsvector_stats().
 	 */
-	if (*atttypid == TSVECTOROID)
+	if ((*basetypcache)->type_id == TSVECTOROID)
 		*atttypcoll = DEFAULT_COLLATION_OID;
 
 	relation_close(rel, NoLock);
@@ -655,14 +704,17 @@ get_attr_stat_type(Oid reloid, AttrNumber attnum,
 
 /*
  * Derive element type information from the attribute type.
+ *
+ * The type cache entry should be derived from a previous call to
+ * get_attr_stat_type().
  */
 static bool
-get_elem_stat_type(Oid atttypid, char atttyptype,
+get_elem_stat_type(TypeCacheEntry *basetypcache,
 				   Oid *elemtypid, Oid *elem_eq_opr)
 {
 	TypeCacheEntry *elemtypcache;
 
-	if (atttypid == TSVECTOROID)
+	if (basetypcache->type_id == TSVECTOROID)
 	{
 		/*
 		 * Special case: element type for tsvector is text. See
@@ -672,8 +724,8 @@ get_elem_stat_type(Oid atttypid, char atttyptype,
 	}
 	else
 	{
-		/* find underlying element type through any domain */
-		*elemtypid = get_base_element_type(atttypid);
+		/* find the underlying element type */
+		*elemtypid = get_element_type(basetypcache->type_id);
 	}
 
 	if (!OidIsValid(*elemtypid))
@@ -685,6 +737,33 @@ get_elem_stat_type(Oid atttypid, char atttyptype,
 		return false;
 
 	*elem_eq_opr = elemtypcache->eq_opr;
+
+	return true;
+}
+
+/*
+ * Derive the range type to use from the attribute type, returning false if
+ * the attribute cannot have range statistics at all.
+ *
+ * For a multirange type, we step down to its range type, because
+ * compute_range_stats() stores range bounds even when analyzing a multirange
+ * column (see also range_typanalyze() and multirange_typanalyze()).
+ *
+ * The type cache entry should be derived from a previous call to
+ * get_attr_stat_type(), so that any domain has already been looked through.
+ */
+static bool
+get_range_stat_type(TypeCacheEntry *basetypcache, Oid *rangetypid)
+{
+	if (basetypcache->typtype == TYPTYPE_MULTIRANGE)
+		*rangetypid = get_multirange_range(basetypcache->type_id);
+	else if (basetypcache->typtype == TYPTYPE_RANGE)
+		*rangetypid = basetypcache->type_id;
+	else
+	{
+		*rangetypid = InvalidOid;
+		return false;
+	}
 
 	return true;
 }
@@ -727,6 +806,15 @@ text_to_stavalues(const char *staname, FmgrInfo *array_in, Datum d, Oid typid,
 	{
 		escontext.error_data->elevel = WARNING;
 		ThrowErrorData(escontext.error_data);
+		*ok = false;
+		return (Datum) 0;
+	}
+
+	if (ARR_NDIM(DatumGetArrayTypeP(result)) != 1)
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("\"%s\" must be a one-dimensional array", staname)));
 		*ok = false;
 		return (Datum) 0;
 	}

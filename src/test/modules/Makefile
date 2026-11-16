@@ -19,6 +19,7 @@ SUBDIRS = \
 		  test_cloexec \
 		  test_copy_callbacks \
 		  test_custom_rmgrs \
+		  test_custom_types \
 		  test_ddl_deparse \
 		  test_dsa \
 		  test_dsm_registry \
@@ -47,9 +48,9 @@ SUBDIRS = \
 
 
 ifeq ($(enable_injection_points),yes)
-SUBDIRS += injection_points gin typcache
+SUBDIRS += injection_points gin hash typcache
 else
-ALWAYS_SUBDIRS += injection_points gin typcache
+ALWAYS_SUBDIRS += injection_points gin hash typcache
 endif
 
 ifeq ($(with_ssl),openssl)

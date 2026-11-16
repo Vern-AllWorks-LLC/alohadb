@@ -836,7 +836,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 
 			log_heap_prune_and_freeze(relation, buffer,
 									  conflict_xid,
-									  true, reason,
+									  do_prune, reason,
 									  prstate.frozen, prstate.nfrozen,
 									  prstate.redirected, prstate.nredirected,
 									  prstate.nowdead, prstate.ndead,
@@ -1848,14 +1848,14 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 		for (;;)
 		{
 			/* Sanity check (pure paranoia) */
-			if (offnum < FirstOffsetNumber)
+			if (nextoffnum < FirstOffsetNumber)
 				break;
 
 			/*
 			 * An offset past the end of page's line pointer array is possible
 			 * when the array was truncated
 			 */
-			if (offnum > maxoff)
+			if (nextoffnum > maxoff)
 				break;
 
 			lp = PageGetItemId(page, nextoffnum);

@@ -236,6 +236,10 @@ $node->command_fails_like(
 	[ 'vacuumdb', '--all', 'postgres' ],
 	qr/cannot vacuum all databases and a specific one at the same time/,
 	'cannot use option --all and a dbname as argument at the same time');
+$node->command_fails_like(
+	[ 'vacuumdb', 'postgres', '--jobs' ],
+	qr/requires an argument/,
+	'option missing its argument after a non-option');
 
 $node->safe_psql('postgres', q|
   CREATE TABLE regression_vacuumdb_test AS select generate_series(1, 10) a, generate_series(2, 11) b;
@@ -322,6 +326,7 @@ $node->issues_sql_unlike(
 $node->safe_psql('postgres',
 	"CREATE TABLE regression_vacuumdb_parted (a INT) PARTITION BY LIST (a);\n"
 	  . "CREATE TABLE regression_vacuumdb_part1 PARTITION OF regression_vacuumdb_parted FOR VALUES IN (1);\n"
+	  . "CREATE INDEX ON regression_vacuumdb_parted ((a + 1));\n"
 	  . "INSERT INTO regression_vacuumdb_parted VALUES (1);\n"
 	  . "ANALYZE regression_vacuumdb_part1;\n");
 $node->issues_sql_like(
