@@ -6,11 +6,12 @@ AlohaDB is an AI-native database built on PostgreSQL 18 (currently based on 18.7
 
 ### `alohadb_vector` — Vector type & ANN search
 
-Vector type, IVFFlat approximate nearest-neighbor index, and distance operators for semantic and embedding-based search.
+IVFFlat approximate nearest-neighbor indexes (k-means trained) and named distance functions on top of the built-in `vector` type, which ships in the AlohaDB core together with the `<->` (L2), `<=>` (cosine), `<#>` (negative inner product) and `<+>` (L1) operators.
 
 ```sql
 CREATE EXTENSION alohadb_vector;
 SELECT vector_index_create('emb_idx', 'docs', 'embedding', 'id', 100, 10, 'cosine');
+SELECT vector_index_rebuild('emb_idx');            -- train the index
 SELECT vector_index_insert('emb_idx', 'doc-1', '[0.1,0.2,0.3]'::vector);
 SELECT * FROM vector_index_search('emb_idx', '[0.1,0.2,0.3]'::vector, 5);
 -- or use distance operators directly:
@@ -123,7 +124,7 @@ SELECT * FROM ontology_history('Honolulu');
 Entity disambiguation and context-aware search reranking. A term can have several registered senses; the surrounding text picks one by counting each sense's context cues (domain, type, keywords, and its `alohadb_ontology` neighbours). Requires `alohadb_ontology`.
 
 ```sql
-CREATE EXTENSION alohadb_context;
+CREATE EXTENSION alohadb_context CASCADE;   -- also installs alohadb_ontology
 --                     term     entity          type        hint  prio domain    keywords
 SELECT context_register('Apple', 'customer:42',   'customer', NULL, 100, 'sales',   ARRAY['invoice','contract']);
 SELECT context_register('Apple', 'produce:apple', 'product',  NULL, 100, 'grocery', ARRAY['fruit','orchard']);
@@ -216,6 +217,7 @@ Unified streaming and batch query model over the same relation — a view UNIONs
 
 ```sql
 CREATE EXTENSION alohadb_unified;
+CREATE TABLE clicks_batch (url text);
 SELECT unified_register('clicks', 'clicks_batch');
 SELECT unified_ingest('clicks', '{"url":"/home"}');
 SELECT * FROM clicks_unified;
@@ -279,13 +281,15 @@ SELECT * FROM alohadb_tiering_status();
 
 ### `alohadb_nosql` — Document database API
 
-Document database API with flexible, optionally schema-validated JSON collections.
+Document database API with flexible, optionally schema-validated JSON collections. Filters match exact values and arrays by containment, or use operator objects (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `contains`, `exists`); search options support `sort`, `fields`, `limit` and `offset`.
 
 ```sql
 CREATE EXTENSION alohadb_nosql;
 SELECT doc_create_collection('users');
-SELECT doc_insert('users', '{"name":"Kai","city":"Hilo"}');
+SELECT doc_insert('users', '{"name":"Kai","city":"Hilo","age":31,"tags":["surf"]}');
 SELECT * FROM doc_search('users', '{"city":"Hilo"}');
+SELECT * FROM doc_search('users', '{"age":{"gte":21},"tags":["surf"]}',
+                         '{"sort":{"age":"desc"},"fields":["name","age"],"limit":10}');
 ```
 
 **Use case:** Build document-oriented features with a MongoDB-style API backed by PostgreSQL durability.
@@ -542,7 +546,7 @@ SELECT * FROM remote_config_status();
 
 ### `alohadb_branch` — Database branching
 
-Lightweight database branching for testing migrations and experiments, optionally from a WAL LSN.
+Lightweight database branching for testing migrations and experiments, optionally from a WAL LSN. Each branch is a separate server (created with `al_basebackup`, started with `al_ctl`) on its own port under `<data>/../branches/<name>`. Branches do not load port-binding or side-effecting workers (`alohadb_pool`, `alohadb_restapi`, `alohadb_cron`, `alohadb_kafka`, `alohadb_scale`) and keep their audit logs separate.
 
 ```sql
 CREATE EXTENSION alohadb_branch;
@@ -606,10 +610,10 @@ SELECT pipeline_run('nightly_etl');
 
 ### `alohadb_python` — Managed Python execution
 
-Python as a first-class workload with a script registry, environments, and managed execution.
+Python as a first-class workload with a script registry, environments, and managed execution. Code may `return` a value or assign `_result`; arguments are available as `args` (dict), `_args` (JSON text) and as plain variables named after each key. Requires a server built with PL/Python (`-Dplpython=enabled`).
 
 ```sql
-CREATE EXTENSION alohadb_python;
+CREATE EXTENSION alohadb_python CASCADE;   -- also installs plpython3u
 SELECT python_eval('return {"sum": args["a"] + args["b"]}', '{"a":2,"b":3}');
 SELECT python_register('normalize', 'return value.strip().lower()');
 SELECT python_exec('normalize', '{"value":"  Hello "}');
@@ -653,7 +657,7 @@ AlohaDB builds from source with Meson + Ninja (the toolchain PostgreSQL 18 uses)
 # build deps: meson, ninja, bison, flex, readline, zlib, openssl, icu
 git clone https://github.com/Vern-AllWorks-LLC/alohadb.git
 cd alohadb/alohadb-20.0
-meson setup builddir --prefix=/opt/alohadb -Drpath=true
+meson setup builddir --prefix=/opt/alohadb -Drpath=true -Dplpython=enabled   # plpython needs python3-devel
 ninja -C builddir -j$(nproc)
 sudo ninja -C builddir install
 # or run the guided installer:  sudo bash install.sh
@@ -692,6 +696,17 @@ ninja -C builddir install
 A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners can run the Meson/Ninja build on each and publish the packaged server (tarball, `.pkg`, or `.msi`) as a release artifact.
 
 **Use case:** Produce installable AlohaDB packages for all three platforms from one push, with optional notarization/signing steps.
+
+## Release notes
+
+### November 2026
+
+- Based on PostgreSQL **18.7** (from 18.3). Same on-disk format: existing clusters run on the new binaries without `al_upgrade`. `output_plugin_libraries` (new in 18.7) defaults to `pgoutput, test_decoding, alohadb_cdc_arrow`.
+- Tooling fixed for AlohaDB's file names: base backups no longer copy `alohadb.pid`; `al_basebackup -R` writes standby settings to `alohadb.auto.conf`; `al_resetwal` detects a running server; `al_dumpall`, `al_verifybackup`, `al_ctl initdb`, `al_createsubscriber` and `al_upgrade` find their helper programs without workarounds.
+- Online DDL: `ALTER COLUMN ... TYPE` to a toastable type (e.g. `int` -> `text`) works again.
+- `alohadb_ontology`, `alohadb_context`, `alohadb_intent` 1.1 (multi-sense disambiguation, bidirectional cycle-safe graph traversal, change history); new `alohadb_pg19compat`; `alohadb_unified` 1.1.
+- Fixed: `alohadb_vector` installs and searches correctly; `alohadb_nosql` string/array filters, sort and projection; `alohadb_python` execution; `alohadb_branch` start/stop safety; an `alohadb_objectstore` crash on credentials without keys.
+- Extension data (ontology, context, intent, vector, python registries) is included in `al_dump` / `al_dumpall`.
 
 ---
 
