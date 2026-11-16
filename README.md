@@ -1,6 +1,6 @@
 # AlohaDB
 
-AlohaDB is an AI-native database built on PostgreSQL 18. It extends standard PostgreSQL with a suite of purpose-built extensions for modern application development — including real-time change notifications, in-database ML inference, vector search, time-travel queries, columnar storage, GraphQL and REST APIs, natural-language-to-SQL, and encrypted audit logging. Every feature ships as a standard `CREATE EXTENSION` module, so it composes naturally with the PostgreSQL you already know. All AlohaDB extensions are MIT-licensed.
+AlohaDB is an AI-native database built on PostgreSQL 18 (currently based on 18.7). It extends standard PostgreSQL with a suite of purpose-built extensions for modern application development — including real-time change notifications, in-database ML inference, vector search, time-travel queries, columnar storage, GraphQL and REST APIs, natural-language-to-SQL, and encrypted audit logging. Every feature ships as a standard `CREATE EXTENSION` module, so it composes naturally with the PostgreSQL you already know. All AlohaDB extensions are MIT-licensed.
 
 ## AI, Vectors & Inference
 
@@ -104,26 +104,31 @@ SELECT * FROM alohadb_learned_stats_status();
 
 ### `alohadb_ontology` — Triple-store context graph
 
-Triple-store context graph for entity and relationship mapping, with subclass hierarchies and graph traversal.
+Triple-store context graph for entity and relationship mapping, with cycle-safe subclass hierarchies, bidirectional graph traversal, and a change history of every assertion and retraction.
 
 ```sql
 CREATE EXTENSION alohadb_ontology;
 SELECT ontology_assert('Honolulu', 'capital_of', 'Hawaii');
+SELECT ontology_subclass('City', 'Place');
 SELECT * FROM ontology_query('Honolulu', NULL, NULL);
-SELECT * FROM ontology_related('Hawaii', 2);
+SELECT * FROM ontology_related('Hawaii', 2);        -- entity, via_predicate, hops, path
+SELECT ontology_is_a('City', 'Place');
+SELECT * FROM ontology_history('Honolulu');
 ```
 
 **Use case:** Model domain knowledge as subject-predicate-object facts and traverse relationships for reasoning.
 
 ### `alohadb_context` — Entity disambiguation & reranking
 
-Entity disambiguation and context-aware search reranking, resolving ambiguous terms to canonical entities. Requires `alohadb_ontology`.
+Entity disambiguation and context-aware search reranking. A term can have several registered senses; the surrounding text picks one by counting each sense's context cues (domain, type, keywords, and its `alohadb_ontology` neighbours). Requires `alohadb_ontology`.
 
 ```sql
 CREATE EXTENSION alohadb_context;
-SELECT context_register('apple', 'Apple Inc.', 'company', 'technology');
-SELECT * FROM context_resolve('apple');
-SELECT * FROM context_rerank(:candidates, 'apple earnings', 0.3, 0.5);
+--                     term     entity          type        hint  prio domain    keywords
+SELECT context_register('Apple', 'customer:42',   'customer', NULL, 100, 'sales',   ARRAY['invoice','contract']);
+SELECT context_register('Apple', 'produce:apple', 'product',  NULL, 100, 'grocery', ARRAY['fruit','orchard']);
+SELECT * FROM context_resolve('Apple', 'renew the Apple contract');   -- customer:42
+SELECT * FROM context_rerank(:candidates, 'Apple invoice status');    -- boosts/penalises hits
 ```
 
 **Use case:** Disambiguate homonyms and rerank search results based on contextual intent.
@@ -140,6 +145,16 @@ SELECT * FROM intent_infer('I would like a refund please');
 ```
 
 **Use case:** Classify incoming support tickets or documents by intent for routing and analytics.
+
+### `alohadb_pg19compat` — PostgreSQL 19 function backports
+
+Self-contained PostgreSQL 19 SQL additions for the 18.x base: `error_on_null()`, `tid_block()`/`tid_offset()`, `random(min, max)` for date/timestamp/timestamptz, `range_minus_multi()`/`multirange_minus_multi()`, and `uuid` ⇄ `bytea` casts. Drop it before upgrading a cluster to a PostgreSQL 19-based AlohaDB, where these are built in.
+
+```sql
+CREATE EXTENSION alohadb_pg19compat;
+SELECT random('2026-01-01'::date, '2026-12-31'::date);
+SELECT * FROM range_minus_multi('[1,10)'::int4range, '[3,5)'::int4range);
+```
 
 ## Real-time, Streaming & Queues
 
