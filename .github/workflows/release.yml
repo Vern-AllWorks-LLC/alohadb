@@ -345,8 +345,8 @@ jobs:
             -c "CREATE EXTENSION alohadb_python CASCADE" \
             -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
             -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
-            | tee "$T/out.txt"
-          grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
+            | /usr/bin/tee "$T/out.txt"
+          /usr/bin/grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
           "$B/al_ctl.exe" -D "$T/data" -m fast -w stop
 
       # ---- Artifacts (always) and GitHub Release (tags / publish=true) ------
