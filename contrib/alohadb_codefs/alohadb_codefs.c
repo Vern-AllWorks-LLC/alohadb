@@ -45,7 +45,85 @@
 
 #include <openssl/evp.h>
 #include <string.h>
+#ifndef WIN32
 #include <fnmatch.h>
+#else
+/*
+ * Windows has no fnmatch(); this matches fnmatch(pattern, string, 0):
+ * '*' and '?' match any characters (including '/'), "[...]" sets with
+ * ranges and leading '!' or '^' negation, and '\' escapes.
+ */
+static int
+fnmatch(const char *p, const char *s, int flags)
+{
+	(void) flags;
+	for (; *p; p++, s++)
+	{
+		switch (*p)
+		{
+			case '?':
+				if (*s == '\0')
+					return 1;
+				break;
+			case '*':
+				while (p[1] == '*')
+					p++;
+				if (p[1] == '\0')
+					return 0;
+				for (; *s; s++)
+					if (fnmatch(p + 1, s, 0) == 0)
+						return 0;
+				return fnmatch(p + 1, s, 0);
+			case '[':
+				{
+					const char *q = p + 1;
+					bool		neg = (*q == '!' || *q == '^');
+					bool		hit = false;
+
+					if (*s == '\0')
+						return 1;
+					if (neg)
+						q++;
+					do
+					{
+						if (q[1] == '-' && q[2] && q[2] != ']')
+						{
+							if ((unsigned char) *s >= (unsigned char) q[0] &&
+								(unsigned char) *s <= (unsigned char) q[2])
+								hit = true;
+							q += 3;
+						}
+						else
+						{
+							if (*q == *s)
+								hit = true;
+							q++;
+						}
+					} while (*q && *q != ']');
+					if (*q != ']')
+					{
+						/* no closing bracket: treat '[' literally */
+						if (*s != '[')
+							return 1;
+						break;
+					}
+					if (hit == neg)
+						return 1;
+					p = q;
+				}
+				break;
+			case '\\':
+				if (p[1])
+					p++;
+				/* FALLTHROUGH */
+			default:
+				if (*p != *s)
+					return 1;
+		}
+	}
+	return *s != '\0';
+}
+#endif
 
 PG_MODULE_MAGIC_EXT(
 					.name = "alohadb_codefs",

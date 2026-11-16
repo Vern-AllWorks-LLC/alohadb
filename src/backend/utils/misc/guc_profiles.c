@@ -147,11 +147,18 @@ DetectHardware(HardwareInfo *hw)
 		}
 	}
 
-	/* --- CPU core count via sysconf --- */
+	/* --- CPU core count --- */
 	{
 		long		ncpus;
 
+#ifdef WIN32
+		SYSTEM_INFO si;
+
+		GetSystemInfo(&si);
+		ncpus = (long) si.dwNumberOfProcessors;
+#else
 		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
 		hw->cpu_cores = (ncpus > 0) ? (int) ncpus : 4;
 	}
 

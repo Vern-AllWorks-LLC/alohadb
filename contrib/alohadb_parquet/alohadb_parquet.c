@@ -61,7 +61,11 @@ parquet_validate_path(const char *filepath)
 		return false;
 
 	/* Resolve the real path */
+#ifdef WIN32
+	if (_fullpath(resolved, filepath, PARQUET_MAX_PATH_LEN) == NULL)
+#else
 	if (realpath(filepath, resolved) == NULL)
+#endif
 	{
 		/* File might not exist yet, use the path as-is for prefix check */
 		strlcpy(resolved, filepath, PARQUET_MAX_PATH_LEN);

@@ -44,7 +44,10 @@ subdir('oid2name')
 subdir('alohadb_analytics')
 subdir('alohadb_audit')
 subdir('alohadb_approx')
-subdir('alohadb_branch')
+# POSIX-only (sockets / shell commands); not built on Windows
+if host_system != 'windows'
+  subdir('alohadb_branch')
+endif
 subdir('alohadb_cache')
 subdir('alohadb_cdc_arrow')
 subdir('alohadb_chart')
@@ -54,7 +57,10 @@ subdir('alohadb_distributed')
 subdir('alohadb_federated')
 subdir('alohadb_gpu')
 subdir('alohadb_graphql')
-subdir('alohadb_http')
+# POSIX-only (sockets / shell commands); not built on Windows
+if host_system != 'windows'
+  subdir('alohadb_http')
+endif
 subdir('alohadb_inference')
 subdir('alohadb_jsonschema')
 subdir('alohadb_learned_stats')
@@ -66,8 +72,14 @@ subdir('alohadb_query_store')
 subdir('alohadb_queue')
 subdir('alohadb_ratelimit')
 subdir('alohadb_realtime')
-subdir('alohadb_remote_config')
-subdir('alohadb_restapi')
+# POSIX-only (sockets / shell commands); not built on Windows
+if host_system != 'windows'
+  subdir('alohadb_remote_config')
+endif
+# POSIX-only (sockets / shell commands); not built on Windows
+if host_system != 'windows'
+  subdir('alohadb_restapi')
+endif
 subdir('alohadb_scale')
 subdir('alohadb_schema_change')
 subdir('alohadb_search')
