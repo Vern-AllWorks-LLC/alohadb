@@ -88,7 +88,7 @@ FROM   unified_stream_events('orders_stream');
 SELECT source_name, batch_table, view_name
 FROM   unified_list();
 
-SELECT source_name, total_ingested, total_flushed
+SELECT source_name, pending_events, total_flushed
 FROM   unified_stats('orders_stream');
 
 -- -----------------------------------------------------------------------
@@ -107,4 +107,11 @@ SELECT count(*) AS orders_intact FROM orders;
 -- -----------------------------------------------------------------------
 
 DROP TABLE orders CASCADE;
+DROP EXTENSION alohadb_unified;
+
+-- Upgrade 1.0 -> 1.1 makes unified_flush() callable without a limit
+CREATE EXTENSION alohadb_unified VERSION '1.0';
+SELECT proisstrict FROM pg_proc WHERE proname = 'unified_flush';
+ALTER EXTENSION alohadb_unified UPDATE TO '1.1';
+SELECT proisstrict FROM pg_proc WHERE proname = 'unified_flush';
 DROP EXTENSION alohadb_unified;
