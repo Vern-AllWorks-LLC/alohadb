@@ -17,6 +17,12 @@ on:
 permissions:
   contents: write
 
+# Python runtime bundled into the Linux/macOS packages for PL/Python and
+# alohadb_python (relocatable CPython builds from python-build-standalone).
+env:
+  PBS_RELEASE: '20261026'
+  PBS_PYTHON: '3.12.16'
+
 jobs:
   build:
     name: ${{ matrix.platform }}
@@ -28,12 +34,16 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: linux-x86_64
+            pytriple: x86_64-unknown-linux-gnu
           - os: ubuntu-22.04-arm
             platform: linux-aarch64
+            pytriple: aarch64-unknown-linux-gnu
           - os: macos-latest
             platform: macos-arm64
+            pytriple: aarch64-apple-darwin
           - os: macos-15-intel
             platform: macos-x86_64
+            pytriple: x86_64-apple-darwin
           - os: windows-latest
             platform: windows-x86_64
 
@@ -92,6 +102,27 @@ jobs:
             zip
             unzip
 
+      # ---- Bundled Python (Linux / macOS) -----------------------------------
+      - name: Fetch bundled Python (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_RELEASE}-${{ matrix.pytriple }}-install_only_stripped.tar.gz"
+          U="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$U/$F"
+          curl -fsSL "$U/SHA256SUMS" -o SHA256SUMS
+          grep " $F\$" SHA256SUMS | shasum -a 256 -c -
+          tar -xzf "$F"
+          PYROOT="$RUNNER_TEMP/python"
+          # Point the pkg-config files at the unpacked location (they say /install).
+          for pc in "$PYROOT"/lib/pkgconfig/*.pc; do
+            sed -i.bak "s|^prefix=.*|prefix=$PYROOT|" "$pc" && rm -f "$pc.bak"
+          done
+          "$PYROOT/bin/python3" -VV
+          ls "$PYROOT/lib" | grep -i libpython
+          echo "PYROOT=$PYROOT" >> "$GITHUB_ENV"
+
       # ---- Build: Linux / macOS ---------------------------------------------
       - name: Configure (Linux / macOS)
         if: runner.os != 'Windows'
@@ -107,12 +138,15 @@ jobs:
           $(brew --prefix curl)/lib/pkgconfig:\
           ${PKG_CONFIG_PATH:-}"
           fi
+          export PKG_CONFIG_PATH="$PYROOT/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
           meson setup builddir \
             --prefix=/usr/local/alohadb \
             --libdir=lib \
             -Drpath=true \
-            -Dssl=openssl
+            -Dssl=openssl \
+            -Dplpython=enabled \
+            -DPYTHON="$PYROOT/bin/python3"
 
       - name: Compile (Linux / macOS)
         if: runner.os != 'Windows'
@@ -133,31 +167,42 @@ jobs:
           mkdir -p dist
           mv stage/usr/local/alohadb "dist/$NAME"
           P="$PWD/dist/$NAME"
+          # PL/Python finds this runtime at <install>/python (see plpy_main.c).
+          cp -a "$PYROOT" "$P/python"
 
           if [ "$(uname -s)" = "Linux" ]; then
             # Bundle every non-glibc dependency, then use $ORIGIN runpaths.
             find "$P/bin" "$P/lib" -type f | while read -r f; do
               file -b "$f" | grep -q '^ELF' || continue
-              LD_LIBRARY_PATH="$P/lib" ldd "$f" | awk '$3 ~ /^\// {print $3}'
+              LD_LIBRARY_PATH="$P/lib:$P/python/lib" ldd "$f" | awk '$3 ~ /^\// {print $3}'
             done | sort -u | while read -r lib; do
               case "$(basename "$lib")" in
                 libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|ld-linux*|libresolv.so*|libutil.so*) continue ;;
               esac
-              case "$lib" in "$P"/*) continue ;; esac
+              case "$lib" in "$P"/*|"$PYROOT"/*) continue ;; esac
               cp -nL "$lib" "$P/lib/"
             done
             find "$P/bin" -type f | while read -r f; do
               if file -b "$f" | grep -q '^ELF'; then patchelf --set-rpath '$ORIGIN/../lib' "$f"; fi
             done
             find "$P/lib" -maxdepth 1 -type f -name '*.so*' | while read -r f; do
-              if file -b "$f" | grep -q '^ELF'; then patchelf --set-rpath '$ORIGIN' "$f"; fi
+              if file -b "$f" | grep -q '^ELF'; then patchelf --set-rpath '$ORIGIN:$ORIGIN/../python/lib' "$f"; fi
             done
           else
             # Copy Homebrew dylibs into lib/bundled and rewrite references.
             args=()
+            pymods=()
             while IFS= read -r f; do
-              if file -b "$f" | grep -q 'Mach-O'; then args+=(-x "$f"); fi
+              file -b "$f" | grep -q 'Mach-O' || continue
+              if otool -L "$f" | grep -q 'libpython'; then pymods+=("$f"); else args+=(-x "$f"); fi
             done < <(find "$P/bin" "$P/lib" -type f)
+            # PL/Python modules: load libpython from the bundled python/ directory.
+            for f in "${pymods[@]}"; do
+              otool -L "$f" | awk 'NR>1 {print $1}' | grep libpython | while read -r dep; do
+                install_name_tool -change "$dep" "@loader_path/../python/lib/$(basename "$dep")" "$f"
+              done
+              otool -L "$f"
+            done
             # Our own libraries (libpq, ...) are handled below, not bundled.
             dylibbundler -of -cd -b -i /usr/local/alohadb/lib/ "${args[@]}" \
               -d "$P/lib/bundled" -p @executable_path/../lib/bundled/
@@ -175,7 +220,7 @@ jobs:
                 *)          install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true ;;
               esac
             done
-            find "$P" -type f | while read -r f; do
+            find "$P" -path "$P/python" -prune -o -type f -print | while read -r f; do
               if file -b "$f" | grep -q 'Mach-O'; then codesign --force -s - "$f" 2>/dev/null || true; fi
             done
           fi
@@ -195,10 +240,11 @@ jobs:
           B="$T/$PKGNAME/bin"
           # No dependency may point outside the package (except the OS libraries).
           if [ "$(uname -s)" = "Linux" ]; then
-            bad=$(ldd "$B/alohadb" "$B/alsql" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
+            bad=$(ldd "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
                   | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil)\.so|/ld-linux' || true)
           else
-            bad=$(otool -L "$B/alohadb" "$B/alsql" | grep -E '/opt/homebrew|/usr/local/' || true)
+            bad=$(otool -L "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" \
+                  | grep -E '/opt/homebrew|/usr/local/|/install/|'"$RUNNER_TEMP" || true)
           fi
           if [ -n "$bad" ]; then echo "Unbundled dependencies:"; echo "$bad"; exit 1; fi
           "$B/alinitdb" -D "$T/data" -A trust -U ci --no-instructions
@@ -207,7 +253,12 @@ jobs:
             -c "SELECT version()" \
             -c "CREATE EXTENSION alohadb_pg19compat" \
             -c "CREATE EXTENSION alohadb_vector" \
-            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2"
+            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2" \
+            -c "CREATE EXTENSION alohadb_python CASCADE" \
+            -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
+            -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
+            | tee "$T/out.txt"
+          grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
           "$B/al_ctl" -D "$T/data" -m fast -w stop
 
       # ---- Build: Windows (MSYS2 shell) -------------------------------------
@@ -218,7 +269,8 @@ jobs:
           meson setup builddir \
             --prefix=/c/alohadb \
             -Drpath=true \
-            -Dssl=openssl
+            -Dssl=openssl \
+            -Dplpython=enabled
 
       - name: Compile (Windows)
         if: runner.os == 'Windows'
@@ -237,8 +289,17 @@ jobs:
           mkdir -p dist
           cp -r "$ROOT" "dist/$NAME"
           P="dist/$NAME"
+          # Python runtime for PL/Python: the MinGW standard library in
+          # <install>/python/lib/pythonX.Y (found by plpy_main.c); its DLLs go to bin/.
+          PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+          mkdir -p "$P/python/lib"
+          cp -r "/mingw64/lib/python$PYV" "$P/python/lib/"
+          PL="$P/python/lib/python$PYV"
+          rm -rf "$PL"/test "$PL"/idlelib "$PL"/tkinter "$PL"/turtledemo "$PL"/lib-dynload/_tkinter*
+          find "$PL/site-packages" -mindepth 1 -maxdepth 1 ! -name README.txt -exec rm -rf {} +
+          find "$PL" -name __pycache__ -type d -prune -exec rm -rf {} +
           # Ship the MinGW runtime DLLs next to the executables.
-          find "$P" -name '*.exe' -o -name '*.dll' | while read -r f; do ldd "$f"; done \
+          find "$P" -name '*.exe' -o -name '*.dll' -o -name '*.pyd' | while read -r f; do ldd "$f"; done \
             | awk '$3 ~ /mingw64/ {print $3}' | sort -u | while read -r dll; do cp -n "$dll" "$P/bin/"; done
           ARCHIVE="${NAME}.zip"
           (cd dist && zip -qr "../$ARCHIVE" "$NAME")
@@ -264,7 +325,12 @@ jobs:
             -c "SELECT version()" \
             -c "CREATE EXTENSION alohadb_pg19compat" \
             -c "CREATE EXTENSION alohadb_vector" \
-            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2"
+            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2" \
+            -c "CREATE EXTENSION alohadb_python CASCADE" \
+            -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
+            -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
+            | tee "$T/out.txt"
+          grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
           "$B/al_ctl.exe" -D "$T/data" -m fast -w stop
 
       # ---- Artifacts (always) and GitHub Release (tags / publish=true) ------

@@ -6,6 +6,8 @@
 
 #include "postgres.h"
 
+#include <sys/stat.h>
+
 #include "access/htup_details.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -42,6 +44,7 @@ static bool PLy_procedure_is_trigger(Form_pg_proc procStruct);
 static void plpython_error_callback(void *arg);
 static void plpython_inline_error_callback(void *arg);
 static void PLy_init_interp(void);
+static void PLy_set_bundled_python_home(void);
 
 static PLyExecutionContext *PLy_push_execution_context(bool atomic_context);
 static void PLy_pop_execution_context(void);
@@ -91,6 +94,31 @@ _PG_init(void)
 }
 
 /*
+ * The self-contained AlohaDB release packages ship a Python runtime in
+ * <install>/python, next to bin/ and lib/.  Point the embedded interpreter
+ * at it unless PYTHONHOME is already set.  Installs without that directory
+ * (e.g. builds against the system Python) are unaffected.
+ */
+static void
+PLy_set_bundled_python_home(void)
+{
+	char		home[MAXPGPATH];
+	struct stat st;
+
+	if (getenv("PYTHONHOME") != NULL || my_exec_path[0] == '\0')
+		return;
+
+	strlcpy(home, my_exec_path, sizeof(home));
+	get_parent_directory(home); /* <install>/bin */
+	get_parent_directory(home); /* <install> */
+	join_path_components(home, home, "python");
+	canonicalize_path(home);
+
+	if (stat(home, &st) == 0 && S_ISDIR(st.st_mode))
+		setenv("PYTHONHOME", home, 1);
+}
+
+/*
  * Perform one-time setup of PL/Python, after checking for a conflict
  * with other versions of Python.
  */
@@ -117,6 +145,7 @@ PLy_initialize(void)
 		return;
 
 	PyImport_AppendInittab("plpy", PyInit_plpy);
+	PLy_set_bundled_python_home();
 	Py_Initialize();
 	PyImport_ImportModule("plpy");
 	PLy_init_interp();
