@@ -125,7 +125,7 @@ get_control_data(ClusterInfo *cluster)
 	if (!live_check || cluster == &new_cluster)
 	{
 		/* only pg_controldata outputs the cluster state */
-		snprintf(cmd, sizeof(cmd), "\"%s/pg_controldata\" \"%s\"",
+		snprintf(cmd, sizeof(cmd), "\"%s/al_controldata\" \"%s\"",
 				 cluster->bindir, cluster->pgdata);
 		fflush(NULL);
 
@@ -192,10 +192,10 @@ get_control_data(ClusterInfo *cluster)
 	if (GET_MAJOR_VERSION(cluster->bin_version) <= 906)
 		resetwal_bin = "pg_resetxlog\" -n";
 	else
-		resetwal_bin = "pg_resetwal\" -n";
+		resetwal_bin = "al_resetwal\" -n";
 	snprintf(cmd, sizeof(cmd), "\"%s/%s \"%s\"",
 			 cluster->bindir,
-			 live_check ? "pg_controldata\"" : resetwal_bin,
+			 live_check ? "al_controldata\"" : resetwal_bin,
 			 cluster->pgdata);
 	fflush(NULL);
 

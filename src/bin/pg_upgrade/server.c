@@ -248,7 +248,7 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 	 * (effective in PG17 or later for the latter).
 	 */
 	snprintf(cmd, sizeof(cmd),
-			 "\"%s/pg_ctl\" -w -l \"%s/%s\" -D \"%s\" -o \"-p %d -b%s %s%s\" start",
+			 "\"%s/al_ctl\" -w -l \"%s/%s\" -D \"%s\" -o \"-p %d -b%s %s%s\" start",
 			 cluster->bindir,
 			 log_opts.logdir,
 			 SERVER_LOG_FILE, cluster->pgconfig, cluster->port,
@@ -342,7 +342,7 @@ stop_postmaster(bool in_atexit)
 		return;					/* no cluster running */
 
 	exec_prog(SERVER_STOP_LOG_FILE, NULL, !in_atexit, !in_atexit,
-			  "\"%s/pg_ctl\" -w -D \"%s\" -o \"%s\" %s stop",
+			  "\"%s/al_ctl\" -w -D \"%s\" -o \"%s\" %s stop",
 			  cluster->bindir, cluster->pgconfig,
 			  cluster->pgopts ? cluster->pgopts : "",
 			  in_atexit ? "-m fast" : "-m smart");

@@ -388,15 +388,15 @@ main(int argc, char *argv[])
 	 * Check for a postmaster lock file --- if there is one, refuse to
 	 * proceed, on grounds we might be interfering with a live installation.
 	 */
-	if ((fd = open("postmaster.pid", O_RDONLY, 0)) < 0)
+	if ((fd = open("alohadb.pid", O_RDONLY, 0)) < 0)
 	{
 		if (errno != ENOENT)
 			pg_fatal("could not open file \"%s\" for reading: %m",
-					 "postmaster.pid");
+					 "alohadb.pid");
 	}
 	else
 	{
-		pg_log_error("lock file \"%s\" exists", "postmaster.pid");
+		pg_log_error("lock file \"%s\" exists", "alohadb.pid");
 		pg_log_error_hint("Is a server running?  If not, delete the lock file and try again.");
 		exit(1);
 	}

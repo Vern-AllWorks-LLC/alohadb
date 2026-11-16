@@ -904,7 +904,7 @@ do_init(void)
 	char	   *cmd;
 
 	if (exec_path == NULL)
-		exec_path = find_other_exec_or_die(argv0, "initdb", "initdb (PostgreSQL) " PG_VERSION "\n");
+		exec_path = find_other_exec_or_die(argv0, "alinitdb", "initdb (PostgreSQL) " PG_VERSION "\n");
 
 	if (pgdata_opt == NULL)
 		pgdata_opt = "";
@@ -2134,7 +2134,7 @@ adjust_data_dir(void)
 		return;
 
 	/* If there is no postgresql.conf, it can't be a config-only dir */
-	snprintf(filename, sizeof(filename), "%s/postgresql.conf", pg_config);
+	snprintf(filename, sizeof(filename), "%s/alohadb.conf", pg_config);
 	if ((fd = fopen(filename, "r")) == NULL)
 		return;
 	fclose(fd);

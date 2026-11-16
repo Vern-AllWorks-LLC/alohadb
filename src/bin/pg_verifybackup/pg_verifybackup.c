@@ -176,7 +176,7 @@ main(int argc, char **argv)
 	 */
 	simple_string_list_append(&context.ignore_list, "backup_manifest");
 	simple_string_list_append(&context.ignore_list, "pg_wal");
-	simple_string_list_append(&context.ignore_list, "postgresql.auto.conf");
+	simple_string_list_append(&context.ignore_list, "alohadb.auto.conf");
 	simple_string_list_append(&context.ignore_list, "recovery.signal");
 	simple_string_list_append(&context.ignore_list, "standby.signal");
 
@@ -261,7 +261,7 @@ main(int argc, char **argv)
 		int			ret;
 
 		pg_waldump_path = pg_malloc(MAXPGPATH);
-		ret = find_other_exec(argv[0], "pg_waldump",
+		ret = find_other_exec(argv[0], "al_waldump",
 							  "pg_waldump (PostgreSQL) " PG_VERSION "\n",
 							  pg_waldump_path);
 		if (ret < 0)
@@ -273,10 +273,10 @@ main(int argc, char **argv)
 
 			if (ret == -1)
 				pg_fatal("program \"%s\" is needed by %s but was not found in the same directory as \"%s\"",
-						 "pg_waldump", "pg_verifybackup", full_path);
+						 "al_waldump", "al_verifybackup", full_path);
 			else
 				pg_fatal("program \"%s\" was found by \"%s\" but was not the same version as %s",
-						 "pg_waldump", full_path, "pg_verifybackup");
+						 "al_waldump", full_path, "al_verifybackup");
 		}
 	}
 

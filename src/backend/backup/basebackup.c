@@ -220,8 +220,8 @@ static const struct exclude_list_item excludeFiles[] =
 	 */
 	{"backup_manifest", false},
 
-	{"postmaster.pid", false},
-	{"postmaster.opts", false},
+	{"alohadb.pid", false},
+	{"alohadb.opts", false},
 
 	/* end of list */
 	{NULL, false}

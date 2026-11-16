@@ -39,7 +39,7 @@ get_bin_version(ClusterInfo *cluster)
 	int			v1 = 0,
 				v2 = 0;
 
-	snprintf(cmd, sizeof(cmd), "\"%s/pg_ctl\" --version", cluster->bindir);
+	snprintf(cmd, sizeof(cmd), "\"%s/al_ctl\" --version", cluster->bindir);
 	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL ||
@@ -235,7 +235,7 @@ pid_lock_file_exists(const char *datadir)
 	char		path[MAXPGPATH];
 	int			fd;
 
-	snprintf(path, sizeof(path), "%s/postmaster.pid", datadir);
+	snprintf(path, sizeof(path), "%s/alohadb.pid", datadir);
 
 	if ((fd = open(path, O_RDONLY, 0)) < 0)
 	{
@@ -428,12 +428,30 @@ check_bin_dir(ClusterInfo *cluster, bool check_versions)
 static void
 check_exec(const char *dir, const char *program, bool check_version)
 {
+	/*
+	 * AlohaDB installs the tools under its own file names, but each still
+	 * reports the upstream name in its version banner.  "program" is the
+	 * upstream name (used for the banner check); map it to the file name.
+	 */
+	static const char *const names[][2] = {
+		{"postgres", "alohadb"}, {"pg_controldata", "al_controldata"},
+		{"pg_ctl", "al_ctl"}, {"pg_resetwal", "al_resetwal"},
+		{"initdb", "alinitdb"}, {"pg_dump", "al_dump"},
+		{"pg_dumpall", "al_dumpall"}, {"pg_restore", "al_restore"},
+		{"psql", "alsql"}, {"vacuumdb", "alvacuumdb"},
+	};
+	const char *file = program;
+
 	char		path[MAXPGPATH];
 	char	   *line;
 	char		cmd[MAXPGPATH];
 	char		versionstr[128];
 
-	snprintf(path, sizeof(path), "%s/%s", dir, program);
+	for (int i = 0; i < lengthof(names); i++)
+		if (strcmp(program, names[i][0]) == 0)
+			file = names[i][1];
+
+	snprintf(path, sizeof(path), "%s/%s", dir, file);
 
 	if (validate_exec(path) != 0)
 		pg_fatal("check for \"%s\" failed: %m", path);

@@ -373,9 +373,16 @@ get_exec_path(const char *argv0, const char *progname)
 	char	   *exec_path;
 	int			ret;
 
+	/*
+	 * AlohaDB installs the tools as al_ctl / al_resetwal; their version
+	 * banners still carry the upstream names.
+	 */
+	const char *file = strcmp(progname, "pg_ctl") == 0 ? "al_ctl" :
+		strcmp(progname, "pg_resetwal") == 0 ? "al_resetwal" : progname;
+
 	versionstr = psprintf("%s (PostgreSQL) %s\n", progname, PG_VERSION);
 	exec_path = pg_malloc(MAXPGPATH);
-	ret = find_other_exec(argv0, progname, versionstr, exec_path);
+	ret = find_other_exec(argv0, file, versionstr, exec_path);
 
 	if (ret < 0)
 	{
@@ -2418,7 +2425,7 @@ main(int argc, char **argv)
 		pg_fatal("subscriber data directory is not a copy of the source database cluster");
 
 	/* Subscriber PID file */
-	snprintf(pidfile, MAXPGPATH, "%s/postmaster.pid", subscriber_dir);
+	snprintf(pidfile, MAXPGPATH, "%s/alohadb.pid", subscriber_dir);
 
 	/*
 	 * The standby server must not be running. If the server is started under

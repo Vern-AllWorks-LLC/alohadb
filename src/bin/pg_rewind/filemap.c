@@ -158,7 +158,7 @@ static const char *const excludeDirContents[] =
 static const struct exclude_list_item excludeFiles[] =
 {
 	/* Skip auto conf temporary file. */
-	{"postgresql.auto.conf.tmp", false},	/* defined as PG_AUTOCONF_FILENAME */
+	{"alohadb.auto.conf.tmp", false},	/* defined as PG_AUTOCONF_FILENAME */
 
 	/* Skip current log file temporary file */
 	{"current_logfiles.tmp", false},	/* defined as
@@ -183,8 +183,8 @@ static const struct exclude_list_item excludeFiles[] =
 	 */
 	{"backup_manifest", false},
 
-	{"postmaster.pid", false},
-	{"postmaster.opts", false},
+	{"alohadb.pid", false},
+	{"alohadb.opts", false},
 
 	/* end of list */
 	{NULL, false}
