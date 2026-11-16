@@ -301,9 +301,22 @@ jobs:
           rm -rf "$PL"/test "$PL"/idlelib "$PL"/tkinter "$PL"/turtledemo "$PL"/lib-dynload/_tkinter*
           find "$PL/site-packages" -mindepth 1 -maxdepth 1 ! -name README.txt -exec rm -rf {} +
           find "$PL" -name __pycache__ -type d -prune -exec rm -rf {} +
-          # Ship the MinGW runtime DLLs next to the executables.
-          find "$P" -name '*.exe' -o -name '*.dll' -o -name '*.pyd' | while read -r f; do ldd "$f"; done \
-            | awk '$3 ~ /mingw64/ {print $3}' | sort -u | while read -r dll; do cp -n "$dll" "$P/bin/"; done
+          # Ship the MinGW runtime DLLs next to the executables: walk the import
+          # tables (objdump; MSYS2 ldd cannot read some .pyd files) until no
+          # new /mingw64/bin DLL turns up.
+          queue=$(find "$P" -name '*.exe' -o -name '*.dll' -o -name '*.pyd')
+          while [ -n "$queue" ]; do
+            next=""
+            for f in $queue; do
+              for d in $(objdump -p "$f" | awk '/DLL Name:/ {print $3}'); do
+                [ -f "/mingw64/bin/$d" ] && [ ! -f "$P/bin/$d" ] || continue
+                cp "/mingw64/bin/$d" "$P/bin/"
+                next="$next $P/bin/$d"
+              done
+            done
+            queue=$next
+          done
+          ls "$P/bin" | grep -ci '\.dll$'
           ARCHIVE="${NAME}.zip"
           (cd dist && zip -qr "../$ARCHIVE" "$NAME")
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
