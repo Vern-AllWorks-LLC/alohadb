@@ -38,6 +38,11 @@ jobs:
             platform: windows-x86_64
 
     steps:
+      # Keep LF line endings on Windows: the Perl code generators
+      # (e.g. generate-lwlocknames.pl) cannot parse CRLF input.
+      - name: Disable CRLF conversion
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
 
       # ---- Linux dependencies -----------------------------------------------
@@ -49,7 +54,7 @@ jobs:
             build-essential meson ninja-build pkg-config \
             libreadline-dev libssl-dev libzstd-dev liblz4-dev \
             zlib1g-dev libicu-dev libcurl4-openssl-dev \
-            python3 bison flex
+            python3 bison flex patchelf file
 
       # ---- macOS dependencies -----------------------------------------------
       - name: Install dependencies (macOS)
@@ -57,7 +62,7 @@ jobs:
         run: |
           brew install meson ninja pkg-config \
             readline openssl zstd lz4 icu4c curl \
-            bison flex
+            bison flex dylibbundler
           # Brew bison/flex are newer than the system versions; put them first
           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix flex)/bin"  >> $GITHUB_PATH
@@ -85,6 +90,7 @@ jobs:
             perl
             flex
             zip
+            unzip
 
       # ---- Build: Linux / macOS ---------------------------------------------
       - name: Configure (Linux / macOS)
@@ -104,6 +110,7 @@ jobs:
 
           meson setup builddir \
             --prefix=/usr/local/alohadb \
+            --libdir=lib \
             -Drpath=true \
             -Dssl=openssl
 
@@ -113,15 +120,80 @@ jobs:
           JOBS=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
           ninja -C builddir -j"$JOBS"
 
+      # The package is relocatable: it unpacks to one alohadb-<ver>-<platform>/
+      # directory, carries its third-party shared libraries, and finds them
+      # relative to its own location (no /usr/local/alohadb, no Homebrew).
       - name: Stage & package (Linux / macOS)
         if: runner.os != 'Windows'
         run: |
+          set -euo pipefail
           DESTDIR="$PWD/stage" ninja -C builddir install
           VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.tar.gz"
-          tar -czf "$ARCHIVE" -C stage .
+          NAME="alohadb-${VERSION}-${{ matrix.platform }}"
+          mkdir -p dist
+          mv stage/usr/local/alohadb "dist/$NAME"
+          P="$PWD/dist/$NAME"
+
+          if [ "$(uname -s)" = "Linux" ]; then
+            # Bundle every non-glibc dependency, then use $ORIGIN runpaths.
+            find "$P/bin" "$P/lib" -type f | while read -r f; do
+              file -b "$f" | grep -q '^ELF' || continue
+              LD_LIBRARY_PATH="$P/lib" ldd "$f" | awk '$3 ~ /^\// {print $3}'
+            done | sort -u | while read -r lib; do
+              case "$(basename "$lib")" in
+                libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|ld-linux*|libresolv.so*|libutil.so*) continue ;;
+              esac
+              case "$lib" in "$P"/*) continue ;; esac
+              cp -nL "$lib" "$P/lib/"
+            done
+            find "$P/bin" -type f | while read -r f; do
+              file -b "$f" | grep -q '^ELF' && patchelf --set-rpath '$ORIGIN/../lib' "$f"
+            done
+            find "$P/lib" -maxdepth 1 -type f -name '*.so*' | while read -r f; do
+              file -b "$f" | grep -q '^ELF' && patchelf --set-rpath '$ORIGIN' "$f"
+            done
+          else
+            # Copy Homebrew dylibs into lib/bundled and rewrite references.
+            args=()
+            while IFS= read -r f; do
+              file -b "$f" | grep -q 'Mach-O' && args+=(-x "$f")
+            done < <(find "$P/bin" "$P/lib" -type f)
+            dylibbundler -of -cd -b -s "$P/lib" "${args[@]}" \
+              -d "$P/lib/bundled" -p @executable_path/../lib/bundled/
+            find "$P" -type f | while read -r f; do
+              file -b "$f" | grep -q 'Mach-O' && codesign --force -s - "$f" 2>/dev/null || true
+            done
+          fi
+
+          ARCHIVE="${NAME}.tar.gz"
+          tar -czf "$ARCHIVE" -C dist "$NAME"
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+          echo "PKGNAME=$NAME" >> $GITHUB_ENV
+
+      - name: Smoke-test package (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$T"
+          B="$T/$PKGNAME/bin"
+          # No dependency may point outside the package (except the OS libraries).
+          if [ "$(uname -s)" = "Linux" ]; then
+            bad=$(ldd "$B/alohadb" "$B/alsql" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
+                  | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil)\.so|/ld-linux' || true)
+          else
+            bad=$(otool -L "$B/alohadb" "$B/alsql" | grep -E '/opt/homebrew|/usr/local/' || true)
+          fi
+          if [ -n "$bad" ]; then echo "Unbundled dependencies:"; echo "$bad"; exit 1; fi
+          "$B/alinitdb" -D "$T/data" -A trust -U ci --no-instructions
+          "$B/al_ctl" -D "$T/data" -l "$T/server.log" -o "-p 54329 -k $T" -w start || { cat "$T/server.log"; exit 1; }
+          "$B/alsql" -X -h "$T" -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
+            -c "SELECT version()" \
+            -c "CREATE EXTENSION alohadb_pg19compat" \
+            -c "CREATE EXTENSION alohadb_vector" \
+            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2"
+          "$B/al_ctl" -D "$T/data" -m fast -w stop
 
       # ---- Build: Windows (MSYS2 shell) -------------------------------------
       - name: Configure (Windows)
@@ -142,12 +214,43 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
+          set -euo pipefail
           DESTDIR="$PWD/stage" ninja -C builddir install
           VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.zip"
-          cd stage && zip -r "../$ARCHIVE" . && cd ..
+          NAME="alohadb-${VERSION}-${{ matrix.platform }}"
+          ROOT="$(dirname "$(dirname "$(find stage -name alohadb.exe | head -1)")")"
+          mkdir -p dist
+          cp -r "$ROOT" "dist/$NAME"
+          P="dist/$NAME"
+          # Ship the MinGW runtime DLLs next to the executables.
+          find "$P" -name '*.exe' -o -name '*.dll' | while read -r f; do ldd "$f"; done \
+            | awk '$3 ~ /mingw64/ {print $3}' | sort -u | while read -r dll; do cp -n "$dll" "$P/bin/"; done
+          ARCHIVE="${NAME}.zip"
+          (cd dist && zip -qr "../$ARCHIVE" "$NAME")
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+          echo "PKGNAME=$NAME" >> $GITHUB_ENV
+
+      - name: Smoke-test package (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          unzip -q "$ARCHIVE" -d "$T"
+          B="$T/$PKGNAME/bin"
+          # Only Windows system directories on PATH: every DLL must come from the package.
+          export PATH="$B:/c/Windows/System32:/c/Windows"
+          "$B/alohadb.exe" --version
+          "$B/alsql.exe" --version
+          "$B/alinitdb.exe" -D "$T/data" -A trust -U ci --no-instructions
+          "$B/al_ctl.exe" -D "$T/data" -l "$T/server.log" -o "-p 54329" -w start || { cat "$T/server.log"; exit 1; }
+          "$B/alsql.exe" -X -h localhost -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
+            -c "SELECT version()" \
+            -c "CREATE EXTENSION alohadb_pg19compat" \
+            -c "CREATE EXTENSION alohadb_vector" \
+            -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2"
+          "$B/al_ctl.exe" -D "$T/data" -m fast -w stop
 
       # ---- Artifacts (always) and GitHub Release (tags / publish=true) ------
       - name: Upload build artifact
