@@ -61,10 +61,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
-            build-essential meson ninja-build pkg-config \
+            build-essential ninja-build pkg-config \
             libreadline-dev libssl-dev libzstd-dev liblz4-dev \
             zlib1g-dev libicu-dev libcurl4-openssl-dev \
-            python3 bison flex patchelf file
+            python3 python3-pip bison flex patchelf file
+          # Ubuntu 22.04's meson (0.61) cannot introspect Python 3.12 (no distutils).
+          sudo pip3 install meson==1.5.2
+          hash -r; meson --version
 
       # ---- macOS dependencies -----------------------------------------------
       - name: Install dependencies (macOS)

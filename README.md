@@ -610,7 +610,7 @@ SELECT pipeline_run('nightly_etl');
 
 ### `alohadb_python` — Managed Python execution
 
-Python as a first-class workload with a script registry, environments, and managed execution. Code may `return` a value or assign `_result`; arguments are available as `args` (dict), `_args` (JSON text) and as plain variables named after each key. Requires a server built with PL/Python (`-Dplpython=enabled`).
+Python as a first-class workload with a script registry, environments, and managed execution. Code may `return` a value or assign `_result`; arguments are available as `args` (dict), `_args` (JSON text) and as plain variables named after each key. Requires PL/Python: the prebuilt packages include it together with their own Python runtime in `<install>/python` (add libraries with `<install>/python/bin/python3 -m pip install ...` on Linux/macOS); source builds need `-Dplpython=enabled`.
 
 ```sql
 CREATE EXTENSION alohadb_python CASCADE;   -- also installs plpython3u
@@ -699,6 +699,10 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 
 ## Release notes
 
+### 20.1.1 — November 2026
+
+- PL/Python and `alohadb_python` work out of the box in the prebuilt packages, which bundle a Python runtime (CPython 3.12 on Linux/macOS, the MinGW CPython on Windows) in `<install>/python`. PL/Python uses it automatically unless `PYTHONHOME` is set.
+
 ### 20.1.0 — November 2026
 
 - Based on PostgreSQL **18.7** (from 18.3). Same on-disk format: existing clusters run on the new binaries without `al_upgrade`. `output_plugin_libraries` (new in 18.7) defaults to `pgoutput, test_decoding, alohadb_cdc_arrow`.
@@ -708,7 +712,7 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 - Fixed: `alohadb_vector` installs and searches correctly; `alohadb_nosql` string/array filters, sort and projection; `alohadb_python` execution; `alohadb_branch` start/stop safety; an `alohadb_objectstore` crash on credentials without keys.
 - Extension data (ontology, context, intent, vector, python registries) is included in `al_dump` / `al_dumpall`.
 - `alohadb_codefs` is now built and installed (it was documented but missing from the build).
-- Prebuilt, self-contained packages for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel) and Windows (x86_64): unpack anywhere and run `bin/alinitdb`. Download from the GitHub Release or <https://vernallworks.com/downloads.php>. Release packages are built without PL/Python, so `alohadb_python` needs a source build with `-Dplpython=enabled`. The Windows package omits the POSIX-only `alohadb_http`, `alohadb_remote_config`, `alohadb_restapi` and `alohadb_branch`.
+- Prebuilt, self-contained packages for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel) and Windows (x86_64): unpack anywhere and run `bin/alinitdb`. Download from the GitHub Release or <https://vernallworks.com/downloads.php>. The Windows package omits the POSIX-only `alohadb_http`, `alohadb_remote_config`, `alohadb_restapi` and `alohadb_branch`.
 
 ---
 
