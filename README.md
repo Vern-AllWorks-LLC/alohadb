@@ -707,6 +707,8 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 - `alohadb_ontology`, `alohadb_context`, `alohadb_intent` 1.1 (multi-sense disambiguation, bidirectional cycle-safe graph traversal, change history); new `alohadb_pg19compat`; `alohadb_unified` 1.1.
 - Fixed: `alohadb_vector` installs and searches correctly; `alohadb_nosql` string/array filters, sort and projection; `alohadb_python` execution; `alohadb_branch` start/stop safety; an `alohadb_objectstore` crash on credentials without keys.
 - Extension data (ontology, context, intent, vector, python registries) is included in `al_dump` / `al_dumpall`.
+- `alohadb_codefs` is now built and installed (it was documented but missing from the build).
+- Prebuilt, self-contained packages for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel) and Windows (x86_64): unpack anywhere and run `bin/alinitdb`. Download from the GitHub Release or <https://vernallworks.com/downloads.php>. Release packages are built without PL/Python, so `alohadb_python` needs a source build with `-Dplpython=enabled`.
 
 ---
 
