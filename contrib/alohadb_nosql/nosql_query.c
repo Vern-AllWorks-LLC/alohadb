@@ -44,6 +44,7 @@ PG_FUNCTION_INFO_V1(doc_array_add_unique);
 static void append_operator_clause(StringInfo buf, const char *field,
 								   const char *op, JsonbValue *val);
 static char *jsonbvalue_to_cstring(JsonbValue *val);
+static char *jsonbvalue_to_json(JsonbValue *val);
 
 /* ----------------------------------------------------------------
  * nosql_filter_to_where
@@ -98,6 +99,11 @@ nosql_filter_to_where(StringInfo buf, const char *filter_str)
 	if (tok != WJB_BEGIN_OBJECT)
 		return;
 
+	/*
+	 * skipNested = true: nested arrays/objects come back as a single
+	 * WJB_VALUE of type jbvBinary, so they can be serialized or walked
+	 * on their own without desynchronising this iterator.
+	 */
 	while ((tok = JsonbIteratorNext(&it, &key, true)) != WJB_END_OBJECT &&
 		   tok != WJB_DONE)
 	{
@@ -106,140 +112,112 @@ nosql_filter_to_where(StringInfo buf, const char *filter_str)
 		if (tok != WJB_KEY)
 			continue;
 
-		/* Get the field name */
 		field_name = pnstrdup(key.val.string.val, key.val.string.len);
 
-		/* Get the value for this key (skipNested=false to distinguish objects) */
-		tok = JsonbIteratorNext(&it, &val, false);
+		tok = JsonbIteratorNext(&it, &val, true);
+		if (tok != WJB_VALUE)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("alohadb_nosql: malformed filter for field \"%s\"",
+							field_name)));
 
 		if (clause_count > 0)
 			appendStringInfoString(buf, " AND ");
 
-		if (tok == WJB_VALUE)
-		{
-			/*
-			 * Scalar value: simple equality via containment operator
-			 * to leverage GIN index.
-			 *   {"name": "Alice"} -> data @> '{"name":"Alice"}'::jsonb
-			 */
-			char   *val_str = jsonbvalue_to_cstring(&val);
-
-			appendStringInfo(buf,
-				"data @> jsonb_build_object(%s, %s::jsonb)",
-				quote_literal_cstr(field_name),
-				quote_literal_cstr(val_str));
-
-			pfree(val_str);
-			clause_count++;
-		}
-		else if (tok == WJB_BEGIN_OBJECT)
+		if (val.type == jbvBinary && JsonContainerIsObject(val.val.binary.data))
 		{
 			/*
 			 * Operator object: {"gt": 25, "lt": 100}
 			 * Multiple operators within the same field are ANDed.
 			 */
-			JsonbValue	opkey, opval;
+			JsonbIterator *oit = JsonbIteratorInit(val.val.binary.data);
+			JsonbValue	opkey,
+						opval;
 			JsonbIteratorToken optok;
 			int			op_count = 0;
 
+			(void) JsonbIteratorNext(&oit, &opkey, true);	/* BEGIN_OBJECT */
+
 			appendStringInfoChar(buf, '(');
 
-			while ((optok = JsonbIteratorNext(&it, &opkey, true)) != WJB_END_OBJECT &&
+			while ((optok = JsonbIteratorNext(&oit, &opkey, true)) != WJB_END_OBJECT &&
 				   optok != WJB_DONE)
 			{
-				char   *op_name;
+				char	   *op_name;
 
 				if (optok != WJB_KEY)
 					continue;
 
 				op_name = pnstrdup(opkey.val.string.val, opkey.val.string.len);
-				optok = JsonbIteratorNext(&it, &opval, true);
+				(void) JsonbIteratorNext(&oit, &opval, true);
 
 				if (op_count > 0)
 					appendStringInfoString(buf, " AND ");
 
-				if (optok == WJB_VALUE)
+				if (opval.type == jbvBinary &&
+					JsonContainerIsArray(opval.val.binary.data))
 				{
+					JsonbIterator *ait;
+					JsonbValue	elem;
+					JsonbIteratorToken etok;
+					int			in_count = 0;
+
+					if (strcmp(op_name, "in") != 0)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("alohadb_nosql: operator \"%s\" does not take an array",
+										op_name)));
+
+					appendStringInfo(buf, "data->>%s IN (",
+									 quote_literal_cstr(field_name));
+
+					ait = JsonbIteratorInit(opval.val.binary.data);
+					while ((etok = JsonbIteratorNext(&ait, &elem, true)) != WJB_DONE)
+					{
+						char	   *elem_str;
+
+						if (etok != WJB_ELEM)
+							continue;
+						elem_str = jsonbvalue_to_cstring(&elem);
+						if (in_count > 0)
+							appendStringInfoString(buf, ", ");
+						appendStringInfoString(buf, quote_literal_cstr(elem_str));
+						pfree(elem_str);
+						in_count++;
+					}
+					if (in_count == 0)
+						appendStringInfoString(buf, "NULL");	/* IN () matches nothing */
+					appendStringInfoChar(buf, ')');
+				}
+				else
 					append_operator_clause(buf, field_name, op_name, &opval);
-					op_count++;
-				}
-				else if (optok == WJB_BEGIN_ARRAY)
-				{
-					/*
-					 * Array value for operators like "in": ["a", "b"]
-					 */
-					if (strcmp(op_name, "in") == 0)
-					{
-						int		in_count = 0;
-						JsonbValue	elem;
-						JsonbIteratorToken etok;
 
-						appendStringInfo(buf, "data->>'%s' IN (",
-										 field_name);
-
-						while ((etok = JsonbIteratorNext(&it, &elem, true)) != WJB_END_ARRAY &&
-							   etok != WJB_DONE)
-						{
-							char   *elem_str;
-
-							if (etok != WJB_ELEM)
-								continue;
-
-							elem_str = jsonbvalue_to_cstring(&elem);
-							if (in_count > 0)
-								appendStringInfoString(buf, ", ");
-							appendStringInfoString(buf,
-								quote_literal_cstr(elem_str));
-							pfree(elem_str);
-							in_count++;
-						}
-
-						appendStringInfoChar(buf, ')');
-						op_count++;
-					}
-					else
-					{
-						/* Unknown array operator; skip the array */
-						JsonbValue	skip;
-						JsonbIteratorToken stok;
-
-						while ((stok = JsonbIteratorNext(&it, &skip, true)) != WJB_END_ARRAY &&
-							   stok != WJB_DONE)
-							;	/* consume */
-					}
-				}
-
+				op_count++;
 				pfree(op_name);
 			}
 
+			if (op_count == 0)
+				appendStringInfoString(buf, "true");
 			appendStringInfoChar(buf, ')');
-			clause_count++;
 		}
-		else if (tok == WJB_BEGIN_ARRAY)
+		else
 		{
 			/*
-			 * Array value at top level: treat as equality containment.
-			 * Skip through the array to consume it from the iterator.
+			 * Scalar or array value: containment on the exact JSON value,
+			 * which can use a GIN index.
+			 *   {"name": "Alice"} -> data @> '{"name": "Alice"}'
+			 *   {"tags": ["a"]}   -> data @> '{"tags": ["a"]}'
 			 */
-			JsonbValue	skip;
-			JsonbIteratorToken stok;
-			StringInfoData arr_buf;
+			char	   *json = jsonbvalue_to_json(&val);
 
-			initStringInfo(&arr_buf);
-			appendStringInfo(&arr_buf, "{\"%s\":", field_name);
-
-			/* Re-serialize is complex; use the containment shortcut */
-			while ((stok = JsonbIteratorNext(&it, &skip, true)) != WJB_END_ARRAY &&
-				   stok != WJB_DONE)
-				;	/* consume */
-
-			/* For array equality, use simple containment */
 			appendStringInfo(buf,
-				"data @> '{}'::jsonb");
-			pfree(arr_buf.data);
-			clause_count++;
+							 "data @> jsonb_build_object(%s, %s::jsonb)",
+							 quote_literal_cstr(field_name),
+							 quote_literal_cstr(json));
+			pfree(json);
 		}
 
+		clause_count++;
 		pfree(field_name);
 	}
 }
@@ -279,8 +257,10 @@ append_operator_clause(StringInfo buf, const char *field,
 	if (strcmp(op, "contains") == 0)
 	{
 		val_str = jsonbvalue_to_cstring(val);
-		appendStringInfo(buf, "data->'%s' @> %s::jsonb",
-						 field,
+		pfree(val_str);
+		val_str = jsonbvalue_to_json(val);
+		appendStringInfo(buf, "data->%s @> %s::jsonb",
+						 quote_literal_cstr(field),
 						 quote_literal_cstr(val_str));
 		pfree(val_str);
 		return;
@@ -296,61 +276,61 @@ append_operator_clause(StringInfo buf, const char *field,
 	if (strcmp(op, "eq") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric = %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric = %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' = %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s = %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "ne") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric <> %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric <> %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' <> %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s <> %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "gt") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric > %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric > %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' > %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s > %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "gte") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric >= %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric >= %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' >= %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s >= %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "lt") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric < %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric < %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' < %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s < %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "lte") == 0)
 	{
 		if (is_numeric)
-			appendStringInfo(buf, "(data->'%s')::numeric <= %s",
-							 field, val_str);
+			appendStringInfo(buf, "(data->%s)::numeric <= %s",
+							 quote_literal_cstr(field), val_str);
 		else
-			appendStringInfo(buf, "data->>'%s' <= %s",
-							 field, quote_literal_cstr(val_str));
+			appendStringInfo(buf, "data->>%s <= %s",
+							 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else if (strcmp(op, "like") == 0)
 	{
-		appendStringInfo(buf, "data->>'%s' LIKE %s",
-						 field, quote_literal_cstr(val_str));
+		appendStringInfo(buf, "data->>%s LIKE %s",
+						 quote_literal_cstr(field), quote_literal_cstr(val_str));
 	}
 	else
 	{
@@ -367,6 +347,14 @@ append_operator_clause(StringInfo buf, const char *field,
  *
  * Convert a JsonbValue scalar to a palloc'd C string.
  * ---------------------------------------------------------------- */
+static char *
+jsonbvalue_to_json(JsonbValue *val)
+{
+	Jsonb	   *j = JsonbValueToJsonb(val);
+
+	return JsonbToCString(NULL, &j->root, VARSIZE(j));
+}
+
 static char *
 jsonbvalue_to_cstring(JsonbValue *val)
 {
@@ -472,12 +460,21 @@ parse_search_opts(const char *opts_str,
 			 * We support a single sort key for simplicity.
 			 */
 			tok = JsonbIteratorNext(&it, &val, true);
-			if (tok == WJB_BEGIN_OBJECT)
+
+			/*
+			 * With skipNested the object arrives as one jbvBinary value;
+			 * walk it with its own iterator.
+			 */
+			if (tok == WJB_VALUE && val.type == jbvBinary &&
+				JsonContainerIsObject(val.val.binary.data))
 			{
+				JsonbIterator *sit = JsonbIteratorInit(val.val.binary.data);
 				JsonbValue	skey, sval;
 				JsonbIteratorToken stok;
 
-				while ((stok = JsonbIteratorNext(&it, &skey, true)) != WJB_END_OBJECT &&
+				(void) JsonbIteratorNext(&sit, &skey, true);	/* BEGIN_OBJECT */
+
+				while ((stok = JsonbIteratorNext(&sit, &skey, true)) != WJB_END_OBJECT &&
 					   stok != WJB_DONE)
 				{
 					char   *sort_field;
@@ -489,13 +486,14 @@ parse_search_opts(const char *opts_str,
 					sort_field = pnstrdup(skey.val.string.val,
 										  skey.val.string.len);
 
-					stok = JsonbIteratorNext(&it, &sval, true);
+					stok = JsonbIteratorNext(&sit, &sval, true);
 					sort_dir = jsonbvalue_to_cstring(&sval);
 
 					if (order_clause->len > 0)
 						appendStringInfoString(order_clause, ", ");
+					/* jsonb ordering: numbers sort numerically, not as text */
 					appendStringInfo(order_clause,
-						"data->>'%s'", sort_field);
+						"data->%s", quote_literal_cstr(sort_field));
 
 					if (pg_strcasecmp(sort_dir, "desc") == 0)
 						appendStringInfoString(order_clause, " DESC");
@@ -515,8 +513,10 @@ parse_search_opts(const char *opts_str,
 			 * -> jsonb_build_object('name', data->'name', 'age', data->'age')
 			 */
 			tok = JsonbIteratorNext(&it, &val, true);
-			if (tok == WJB_BEGIN_ARRAY)
+			if (tok == WJB_VALUE && val.type == jbvBinary &&
+				JsonContainerIsArray(val.val.binary.data))
 			{
+				JsonbIterator *fit = JsonbIteratorInit(val.val.binary.data);
 				JsonbValue	elem;
 				JsonbIteratorToken etok;
 				int			field_count = 0;
@@ -525,7 +525,9 @@ parse_search_opts(const char *opts_str,
 				initStringInfo(&proj);
 				appendStringInfoString(&proj, "jsonb_build_object(");
 
-				while ((etok = JsonbIteratorNext(&it, &elem, true)) != WJB_END_ARRAY &&
+				(void) JsonbIteratorNext(&fit, &elem, true);	/* BEGIN_ARRAY */
+
+				while ((etok = JsonbIteratorNext(&fit, &elem, true)) != WJB_END_ARRAY &&
 					   etok != WJB_DONE)
 				{
 					char   *fname;
@@ -539,8 +541,9 @@ parse_search_opts(const char *opts_str,
 					if (field_count > 0)
 						appendStringInfoString(&proj, ", ");
 
-					appendStringInfo(&proj, "%s, data->'%s'",
-									 quote_literal_cstr(fname), fname);
+					appendStringInfo(&proj, "%s, data->%s",
+									 quote_literal_cstr(fname),
+									 quote_literal_cstr(fname));
 					pfree(fname);
 					field_count++;
 				}
