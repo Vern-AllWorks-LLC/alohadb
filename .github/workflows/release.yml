@@ -180,7 +180,7 @@ jobs:
               LD_LIBRARY_PATH="$P/lib:$P/python/lib" ldd "$f" | awk '$3 ~ /^\// {print $3}'
             done | sort -u | while read -r lib; do
               case "$(basename "$lib")" in
-                libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|ld-linux*|libresolv.so*|libutil.so*) continue ;;
+                libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|ld-linux*|libresolv.so*|libutil.so*|libgcc_s.so*) continue ;;
               esac
               case "$lib" in "$P"/*|"$PYROOT"/*) continue ;; esac
               cp -nL "$lib" "$P/lib/"
@@ -244,7 +244,7 @@ jobs:
           # No dependency may point outside the package (except the OS libraries).
           if [ "$(uname -s)" = "Linux" ]; then
             bad=$(ldd "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
-                  | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil)\.so|/ld-linux' || true)
+                  | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil|libgcc_s)\.so|/ld-linux' || true)
           else
             bad=$(otool -L "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" \
                   | grep -E '/opt/homebrew|/usr/local/|/install/|'"$RUNNER_TEMP" || true)
