@@ -412,8 +412,18 @@ parse_s3_uri(const char *uri, const char *config_json,
 					 out_bucket, out_region);
 	}
 
-	json_extract_str(config_json, "access_key_id",     out_access_key, ak_len);
-	json_extract_str(config_json, "secret_access_key", out_secret_key, sk_len);
+	/*
+	 * Credentials are required for SigV4 signing.  Never sign with
+	 * uninitialized buffers: a credential registered without keys used to
+	 * crash the backend (and with it, every other session on the server).
+	 */
+	out_access_key[0] = '\0';
+	out_secret_key[0] = '\0';
+	if (!json_extract_str(config_json, "access_key_id", out_access_key, ak_len) ||
+		!json_extract_str(config_json, "secret_access_key", out_secret_key, sk_len))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("alohadb_objectstore: S3 credential is missing \"access_key_id\" or \"secret_access_key\"")));
 }
 
 /* ----------------------------------------------------------------
