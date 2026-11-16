@@ -5476,6 +5476,19 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode,
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+		LOCKMODE	toast_lockmode = lockmode;
+
+		/*
+		 * Online DDL starts some subcommands (e.g. ALTER COLUMN TYPE) under
+		 * a weaker lock and upgrades the relation to AccessExclusiveLock
+		 * only when a rewrite or catalog flip turns out to be needed.  The
+		 * upgrade does not change "lockmode", so report the lock we
+		 * actually hold; otherwise adding a toast table (int -> text, say)
+		 * fails its AccessExclusiveLock cross-check.
+		 */
+		if (enable_online_ddl && lockmode < AccessExclusiveLock &&
+			CheckRelationOidLockedByMe(tab->relid, AccessExclusiveLock, false))
+			toast_lockmode = AccessExclusiveLock;
 
 		/*
 		 * If the table is source table of ATTACH PARTITION command, we did
@@ -5486,7 +5499,7 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode,
 			  tab->relkind == RELKIND_PARTITIONED_TABLE) &&
 			 tab->partition_constraint == NULL) ||
 			tab->relkind == RELKIND_MATVIEW)
-			AlterTableCreateToastTable(tab->relid, (Datum) 0, lockmode);
+			AlterTableCreateToastTable(tab->relid, (Datum) 0, toast_lockmode);
 	}
 }
 
