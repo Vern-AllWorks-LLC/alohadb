@@ -4,5 +4,5 @@
 
 PG_MODULE_MAGIC_EXT(
 	.name = "alohadb_ontology",
-	.version = "1.0"
+	.version = "1.1"
 );

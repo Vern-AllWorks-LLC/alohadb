@@ -1,5 +1,5 @@
 comment = 'AlohaDB Intent - Document intent classification and why-indexing'
-default_version = '1.0'
+default_version = '1.1'
 module_pathname = '$libdir/alohadb_intent'
 schema = public
 relocatable = false

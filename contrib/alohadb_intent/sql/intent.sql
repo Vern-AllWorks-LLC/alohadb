@@ -1,104 +1,64 @@
 -- alohadb_intent regression test
--- Tests: intent registry, document tagging, inference, hierarchy
 
 CREATE EXTENSION alohadb_intent;
+SELECT extversion FROM pg_extension WHERE extname = 'alohadb_intent';
 
--- -----------------------------------------------------------------------
--- Register intent hierarchy
--- -----------------------------------------------------------------------
+SELECT intent_register('customer_service', 'Customer service interaction', ARRAY['help', 'support']);
+SELECT intent_register('purchase',  'Purchase intent',  ARRAY['buy', 'order', 'price', 'checkout'], 'customer_service');
+SELECT intent_register('complaint', 'Complaint',        ARRAY['broken', 'damaged', 'refund', 'return'], 'customer_service');
+SELECT intent_register('billing_dispute', 'Billing dispute', ARRAY['invoice', 'charged twice', 'refund'], 'complaint');
+SELECT intent_register('fifty_percent', 'Discount talk', ARRAY['50%', 'half_off']);
 
--- Root intents
-SELECT intent_register('customer_service', 'General customer service interactions', ARRAY['help','support','service'], NULL);
-SELECT intent_register('purchase',         'Purchase-related intent',               ARRAY['buy','order','purchase','checkout','price','cost'], 'customer_service');
-SELECT intent_register('complaint',        'Complaint or dissatisfaction',          ARRAY['broken','damaged','wrong','bad','terrible','refund','return'], 'customer_service');
-SELECT intent_register('inquiry',          'General information inquiry',           ARRAY['what','how','when','where','tell me','explain'], 'customer_service');
-SELECT intent_register('compliment',       'Positive feedback',                     ARRAY['great','love','excellent','amazing','thank'], 'customer_service');
+-- Cycles in the hierarchy are rejected
+SELECT intent_register('customer_service', 'Customer service interaction', ARRAY['help'], 'billing_dispute');
+SELECT intent_register('purchase', 'Purchase intent', ARRAY['buy'], 'purchase');
 
--- -----------------------------------------------------------------------
--- Tag documents explicitly
--- -----------------------------------------------------------------------
+SELECT * FROM intent_ancestors('billing_dispute');
 
-SELECT intent_tag(1, 'I want to buy the new laptop, what is the price?', 'purchase');
-SELECT intent_tag(2, 'My order arrived broken, I want a refund',         'complaint');
-SELECT intent_tag(3, 'How do I track my order?',                         'inquiry');
-SELECT intent_tag(4, 'This product is amazing, thank you!',              'compliment');
+-- Manual tagging
+SELECT intent_tag('t1', 'tickets', 'purchase', 0.9);
+SELECT intent_tag('t2', 'tickets', 'complaint');
+SELECT intent_tag('t2', 'tickets', 'billing_dispute', 0.8, '{"src":"manual"}');
+SELECT intent_name, confidence, parent_intent, metadata FROM intent_of('t2', 'tickets');
 
--- -----------------------------------------------------------------------
--- Query document intents
--- -----------------------------------------------------------------------
+-- intent_find with its default (NULL) source table
+SELECT doc_id, source_table, confidence FROM intent_find('purchase');
+SELECT doc_id FROM intent_find('complaint', 'tickets');
+SELECT count(*) FROM intent_find('complaint', 'emails');
 
-SELECT doc_id, intent_name
-FROM   intent_of(1);
+-- Inference: whole words only; LIKE wildcards in keywords are literal
+SELECT intent_name, hit_count, round(confidence::numeric, 3) AS conf
+FROM   intent_infer('I was charged twice on my invoice and want a refund');
+SELECT intent_name FROM intent_infer('the reorder button is broken');   -- "reorder" is not "order"
+SELECT intent_name FROM intent_infer('get 50% off today');
+SELECT intent_name FROM intent_infer('get 50 percent off today');        -- "%" is not a wildcard
+SELECT intent_name FROM intent_infer('halfXoff deal');                   -- "_" is not a wildcard
 
-SELECT doc_id, intent_name
-FROM   intent_of(2);
+-- Auto-tag with default (NULL) metadata
+SELECT intent_auto_tag('t3', 'tickets', 'I want to buy it, what is the price at checkout?');
+SELECT intent_name, round(confidence::numeric, 2) FROM intent_of('t3', 'tickets');
 
--- -----------------------------------------------------------------------
--- Find documents by intent
--- -----------------------------------------------------------------------
-
-SELECT doc_id
-FROM   intent_find('purchase')
-ORDER BY doc_id;
-
-SELECT doc_id
-FROM   intent_find('complaint')
-ORDER BY doc_id;
-
--- -----------------------------------------------------------------------
--- Intent inference (keyword scoring)
--- -----------------------------------------------------------------------
-
-SELECT intent_name, round(score::numeric, 3) AS score
-FROM   intent_infer('I need to return this broken item and get my money back')
-WHERE  score > 0
-ORDER BY score DESC, intent_name
-LIMIT 5;
-
-SELECT intent_name, round(score::numeric, 3) AS score
-FROM   intent_infer('What time does the store close?')
-WHERE  score > 0
-ORDER BY score DESC, intent_name
-LIMIT 5;
-
--- -----------------------------------------------------------------------
--- Auto-tag
--- -----------------------------------------------------------------------
-
-SELECT intent_auto_tag(5, 'I love this product, great quality!');
-SELECT intent_name FROM intent_of(5);
-
--- -----------------------------------------------------------------------
--- Intent hierarchy ancestors
--- -----------------------------------------------------------------------
-
-SELECT ancestor, depth
-FROM   intent_ancestors('purchase')
-ORDER BY depth;
-
-SELECT ancestor, depth
-FROM   intent_ancestors('complaint')
-ORDER BY depth;
-
--- -----------------------------------------------------------------------
--- Statistics
--- -----------------------------------------------------------------------
-
-SELECT total_intents, total_documents, total_tags
+-- Stats (previously failed on chr(0))
+SELECT registered_intents, tagged_documents, round(avg_confidence::numeric, 3)
 FROM   intent_stats();
 
--- -----------------------------------------------------------------------
--- Untag
--- -----------------------------------------------------------------------
+SELECT intent_untag('t1', 'tickets', 'purchase') AS untagged;
+SELECT count(*) FROM intent_of('t1', 'tickets');
 
-SELECT intent_untag(1, 'purchase');
+SELECT c.relname
+FROM   pg_extension e, unnest(e.extconfig) AS cfg(relid)
+JOIN   pg_class c ON c.oid = cfg.relid
+WHERE  e.extname = 'alohadb_intent'
+ORDER BY 1;
 
-SELECT count(*) AS tags_after_untag
-FROM   intent_of(1);
+DROP EXTENSION alohadb_intent;
 
--- -----------------------------------------------------------------------
--- Cleanup
--- -----------------------------------------------------------------------
-
-TRUNCATE alohadb_intent_registry, alohadb_intent_documents CASCADE;
+-- Upgrade path 1.0 -> 1.1
+CREATE EXTENSION alohadb_intent VERSION '1.0';
+SELECT intent_register('a', 'A', ARRAY['alpha']);
+SELECT intent_tag('d1', 't', 'a');
+ALTER EXTENSION alohadb_intent UPDATE TO '1.1';
+SELECT * FROM intent_stats();
+SELECT intent_auto_tag('d2', 't', 'alpha release');
+SELECT intent_register('a', 'A', ARRAY['alpha'], 'a');
 DROP EXTENSION alohadb_intent;

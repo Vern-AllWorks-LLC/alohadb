@@ -20,5 +20,18 @@ contrib_targets += alohadb_intent
 install_data(
   'alohadb_intent.control',
   'alohadb_intent--1.0.sql',
+  'alohadb_intent--1.0--1.1.sql',
+  'alohadb_intent--1.1.sql',
   kwargs: contrib_data_args,
 )
+
+tests += {
+  'name': 'alohadb_intent',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'intent',
+    ],
+  },
+}

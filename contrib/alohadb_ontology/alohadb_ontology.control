@@ -1,5 +1,5 @@
 comment = 'AlohaDB Ontology - Triple-store context graph for entity and relationship mapping'
-default_version = '1.0'
+default_version = '1.1'
 module_pathname = '$libdir/alohadb_ontology'
 schema = public
 relocatable = false

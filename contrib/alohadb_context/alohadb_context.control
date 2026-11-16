@@ -1,5 +1,5 @@
 comment = 'AlohaDB Context - Entity disambiguation and context-aware search reranking'
-default_version = '1.0'
+default_version = '1.1'
 module_pathname = '$libdir/alohadb_context'
 requires = 'alohadb_ontology'
 schema = public

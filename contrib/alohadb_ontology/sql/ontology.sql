@@ -1,103 +1,72 @@
 -- alohadb_ontology regression test
--- Tests: triple store, type hierarchy, graph traversal
 
 CREATE EXTENSION alohadb_ontology;
+SELECT extversion FROM pg_extension WHERE extname = 'alohadb_ontology';
 
--- -----------------------------------------------------------------------
--- Type hierarchy
--- -----------------------------------------------------------------------
+-- Types and hierarchy
+SELECT ontology_type_assert('Apple Inc.', 'TechCompany', 'Consumer electronics maker');
+SELECT ontology_type_assert('Apple Inc.', 'Customer');
+SELECT ontology_subclass('TechCompany', 'Company');
+SELECT ontology_subclass('Company', 'Organization');
+SELECT ontology_subclass('Customer', 'Organization');
 
-SELECT ontology_type_assert('Organization', NULL);
-SELECT ontology_type_assert('Company', 'Organization');
-SELECT ontology_type_assert('TechCompany', 'Company');
-SELECT ontology_type_assert('Product', NULL);
-SELECT ontology_type_assert('SoftwareProduct', 'Product');
-SELECT ontology_type_assert('Person', NULL);
+SELECT * FROM ontology_ancestors('TechCompany');
+SELECT * FROM ontology_descendants('Organization');
+SELECT ontology_is_a('TechCompany', 'Organization') AS t,
+       ontology_is_a('Organization', 'TechCompany') AS f,
+       ontology_is_a('Company', 'Company')          AS self;
+SELECT * FROM ontology_entity_types('Apple Inc.');
 
-SELECT ontology_subclass('TechCompany', 'Organization') AS is_subclass_true;
-SELECT ontology_subclass('Product', 'TechCompany')      AS is_subclass_false;
+-- Cycles are rejected
+SELECT ontology_subclass('Organization', 'TechCompany');
+SELECT ontology_subclass('Company', 'Company');
 
--- -----------------------------------------------------------------------
--- Assert triples (S-P-O knowledge graph)
--- -----------------------------------------------------------------------
+-- Triples
+SELECT ontology_assert('Apple Inc.', 'makes',          'iPhone');
+SELECT ontology_assert('Apple Inc.', 'makes',          'Mac');
+SELECT ontology_assert('Apple Inc.', 'headquartersIn', 'Cupertino');
+SELECT ontology_assert('Steve Jobs', 'founded',        'Apple Inc.');
+SELECT ontology_assert('Cupertino',  'locatedIn',      'California');
+SELECT ontology_assert('Mac',        'runs',           'macOS', 'default', 0.4);
+SELECT ontology_assert('Apple Inc.', 'makes', 'iPhone');   -- idempotent
+SELECT ontology_assert(NULL, 'makes', 'x');                -- error
 
--- Apple Inc. facts
-SELECT ontology_assert('Apple Inc.', 'rdf:type',     'TechCompany',  1.0);
-SELECT ontology_assert('Apple Inc.', 'founded',      '1976-04-01',   1.0);
-SELECT ontology_assert('Apple Inc.', 'foundedBy',    'Steve Jobs',   1.0);
-SELECT ontology_assert('Apple Inc.', 'foundedBy',    'Steve Wozniak',1.0);
-SELECT ontology_assert('Apple Inc.', 'headquartersIn','Cupertino',   1.0);
-SELECT ontology_assert('Apple Inc.', 'makes',        'iPhone',       1.0);
-SELECT ontology_assert('Apple Inc.', 'makes',        'Mac',          1.0);
-SELECT ontology_assert('Apple Inc.', 'makes',        'iPad',         1.0);
+SELECT subject, predicate, object FROM ontology_query('Apple Inc.', 'makes');
+SELECT subject, predicate, object FROM ontology_query(NULL, NULL, 'Apple Inc.');
 
--- Products
-SELECT ontology_assert('iPhone',     'rdf:type',     'SoftwareProduct', 0.9);
-SELECT ontology_assert('iPhone',     'madeBy',       'Apple Inc.',      1.0);
-SELECT ontology_assert('Mac',        'rdf:type',     'SoftwareProduct', 0.9);
-SELECT ontology_assert('Mac',        'madeBy',       'Apple Inc.',      1.0);
+-- Traversal follows both directions, is cycle-safe, shortest hop wins,
+-- low-confidence edges are skipped
+SELECT entity, via_predicate, hops FROM ontology_related('Apple Inc.', 1) ORDER BY hops, entity;
+SELECT entity, hops, path FROM ontology_related('Steve Jobs', 3) ORDER BY hops, entity;
+SELECT entity, hops FROM ontology_related('Mac', 1, 0.0) ORDER BY entity;
+SELECT ontology_assert('California', 'home of', 'Steve Jobs');  -- creates a cycle
+SELECT entity, hops FROM ontology_related('Steve Jobs', 5) ORDER BY hops, entity;
 
--- People
-SELECT ontology_assert('Steve Jobs', 'rdf:type',     'Person',      1.0);
-SELECT ontology_assert('Steve Jobs', 'workedAt',     'Apple Inc.',  1.0);
-SELECT ontology_assert('Tim Cook',   'rdf:type',     'Person',      1.0);
-SELECT ontology_assert('Tim Cook',   'workedAt',     'Apple Inc.',  1.0);
+-- Stats (entities counted once whether subject or object)
+SELECT * FROM ontology_stats();
 
--- -----------------------------------------------------------------------
--- Query: wildcard matching
--- -----------------------------------------------------------------------
+-- Retraction and history
+SELECT ontology_retract('Apple Inc.', 'makes', 'Mac') AS retracted;
+SELECT ontology_retract('Apple Inc.', 'makes', 'Mac') AS retracted_again;
+SELECT ontology_assert('Mac', 'runs', 'macOS', 'default', 0.9);
+SELECT operation, subject, predicate, object, old_confidence, new_confidence
+FROM   ontology_history('Mac');
 
--- All things Apple makes
-SELECT subject, predicate, object
-FROM   ontology_query('Apple Inc.', 'makes', NULL)
-ORDER BY object;
+-- Extension data is included in dumps
+SELECT c.relname
+FROM   pg_extension e, unnest(e.extconfig) AS cfg(relid)
+JOIN   pg_class c ON c.oid = cfg.relid
+WHERE  e.extname = 'alohadb_ontology'
+ORDER BY 1;
 
--- All founders
-SELECT subject, predicate, object
-FROM   ontology_query('Apple Inc.', 'foundedBy', NULL)
-ORDER BY object;
+DROP EXTENSION alohadb_ontology;
 
--- Who works at Apple?
-SELECT subject, predicate, object
-FROM   ontology_query(NULL, 'workedAt', 'Apple Inc.')
-ORDER BY subject;
-
--- Exact triple lookup
-SELECT subject, predicate, object, confidence
-FROM   ontology_query('Apple Inc.', 'rdf:type', 'TechCompany');
-
--- -----------------------------------------------------------------------
--- Graph traversal
--- -----------------------------------------------------------------------
-
-SELECT related_entity, predicate, depth
-FROM   ontology_related('Apple Inc.', 2)
-ORDER BY depth, related_entity;
-
--- Ancestors of TechCompany
-SELECT ancestor, depth
-FROM   ontology_ancestors('TechCompany')
-ORDER BY depth;
-
--- -----------------------------------------------------------------------
--- Statistics
--- -----------------------------------------------------------------------
-
-SELECT total_triples, total_types, total_entities
-FROM   ontology_stats();
-
--- -----------------------------------------------------------------------
--- Retract
--- -----------------------------------------------------------------------
-
-SELECT ontology_retract('Apple Inc.', 'foundedBy', 'Steve Jobs');
-
-SELECT count(*) AS founders_after_retract
-FROM   ontology_query('Apple Inc.', 'foundedBy', NULL);
-
--- -----------------------------------------------------------------------
--- Cleanup
--- -----------------------------------------------------------------------
-
-TRUNCATE alohadb_ontology_triples, alohadb_ontology_types, alohadb_ontology_hierarchy;
+-- Upgrade path 1.0 -> 1.1 yields a working 1.1
+CREATE EXTENSION alohadb_ontology VERSION '1.0';
+SELECT ontology_assert('a', 'p', 'b');
+SELECT ontology_assert('b', 'p', 'c');
+ALTER EXTENSION alohadb_ontology UPDATE TO '1.1';
+SELECT entity, hops FROM ontology_related('c', 2) ORDER BY entity;
+SELECT ontology_retract('a', 'p', 'b');
+SELECT operation, subject, object FROM ontology_history('b');
 DROP EXTENSION alohadb_ontology;

@@ -20,5 +20,18 @@ contrib_targets += alohadb_ontology
 install_data(
   'alohadb_ontology.control',
   'alohadb_ontology--1.0.sql',
+  'alohadb_ontology--1.0--1.1.sql',
+  'alohadb_ontology--1.1.sql',
   kwargs: contrib_data_args,
 )
+
+tests += {
+  'name': 'alohadb_ontology',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'ontology',
+    ],
+  },
+}

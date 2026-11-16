@@ -20,5 +20,18 @@ contrib_targets += alohadb_context
 install_data(
   'alohadb_context.control',
   'alohadb_context--1.0.sql',
+  'alohadb_context--1.0--1.1.sql',
+  'alohadb_context--1.1.sql',
   kwargs: contrib_data_args,
 )
+
+tests += {
+  'name': 'alohadb_context',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'context',
+    ],
+  },
+}

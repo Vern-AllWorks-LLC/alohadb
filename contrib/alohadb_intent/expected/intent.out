@@ -1,0 +1,235 @@
+-- alohadb_intent regression test
+CREATE EXTENSION alohadb_intent;
+SELECT extversion FROM pg_extension WHERE extname = 'alohadb_intent';
+ extversion 
+------------
+ 1.1
+(1 row)
+
+SELECT intent_register('customer_service', 'Customer service interaction', ARRAY['help', 'support']);
+ intent_register 
+-----------------
+ 
+(1 row)
+
+SELECT intent_register('purchase',  'Purchase intent',  ARRAY['buy', 'order', 'price', 'checkout'], 'customer_service');
+ intent_register 
+-----------------
+ 
+(1 row)
+
+SELECT intent_register('complaint', 'Complaint',        ARRAY['broken', 'damaged', 'refund', 'return'], 'customer_service');
+ intent_register 
+-----------------
+ 
+(1 row)
+
+SELECT intent_register('billing_dispute', 'Billing dispute', ARRAY['invoice', 'charged twice', 'refund'], 'complaint');
+ intent_register 
+-----------------
+ 
+(1 row)
+
+SELECT intent_register('fifty_percent', 'Discount talk', ARRAY['50%', 'half_off']);
+ intent_register 
+-----------------
+ 
+(1 row)
+
+-- Cycles in the hierarchy are rejected
+SELECT intent_register('customer_service', 'Customer service interaction', ARRAY['help'], 'billing_dispute');
+ERROR:  intent "customer_service" cannot have parent "billing_dispute": cycle in intent hierarchy
+CONTEXT:  PL/pgSQL function alohadb_intent_check_cycle() line 7 at RAISE
+SQL statement "INSERT INTO alohadb_intent_registry
+        (intent_name, description, keywords, parent_intent)
+    VALUES
+        (p_intent_name, p_description, p_keywords, p_parent)
+    ON CONFLICT (intent_name)
+    DO UPDATE SET
+        description   = EXCLUDED.description,
+        keywords      = EXCLUDED.keywords,
+        parent_intent = EXCLUDED.parent_intent"
+PL/pgSQL function intent_register(text,text,text[],text) line 3 at SQL statement
+SELECT intent_register('purchase', 'Purchase intent', ARRAY['buy'], 'purchase');
+ERROR:  intent "purchase" cannot have parent "purchase": cycle in intent hierarchy
+CONTEXT:  PL/pgSQL function alohadb_intent_check_cycle() line 7 at RAISE
+SQL statement "INSERT INTO alohadb_intent_registry
+        (intent_name, description, keywords, parent_intent)
+    VALUES
+        (p_intent_name, p_description, p_keywords, p_parent)
+    ON CONFLICT (intent_name)
+    DO UPDATE SET
+        description   = EXCLUDED.description,
+        keywords      = EXCLUDED.keywords,
+        parent_intent = EXCLUDED.parent_intent"
+PL/pgSQL function intent_register(text,text,text[],text) line 3 at SQL statement
+SELECT * FROM intent_ancestors('billing_dispute');
+   intent_name    | depth 
+------------------+-------
+ complaint        |     1
+ customer_service |     2
+(2 rows)
+
+-- Manual tagging
+SELECT intent_tag('t1', 'tickets', 'purchase', 0.9);
+ intent_tag 
+------------
+ 
+(1 row)
+
+SELECT intent_tag('t2', 'tickets', 'complaint');
+ intent_tag 
+------------
+ 
+(1 row)
+
+SELECT intent_tag('t2', 'tickets', 'billing_dispute', 0.8, '{"src":"manual"}');
+ intent_tag 
+------------
+ 
+(1 row)
+
+SELECT intent_name, confidence, parent_intent, metadata FROM intent_of('t2', 'tickets');
+   intent_name   | confidence |  parent_intent   |     metadata      
+-----------------+------------+------------------+-------------------
+ complaint       |          1 | customer_service | 
+ billing_dispute |        0.8 | complaint        | {"src": "manual"}
+(2 rows)
+
+-- intent_find with its default (NULL) source table
+SELECT doc_id, source_table, confidence FROM intent_find('purchase');
+ doc_id | source_table | confidence 
+--------+--------------+------------
+ t1     | tickets      |        0.9
+(1 row)
+
+SELECT doc_id FROM intent_find('complaint', 'tickets');
+ doc_id 
+--------
+ t2
+(1 row)
+
+SELECT count(*) FROM intent_find('complaint', 'emails');
+ count 
+-------
+     0
+(1 row)
+
+-- Inference: whole words only; LIKE wildcards in keywords are literal
+SELECT intent_name, hit_count, round(confidence::numeric, 3) AS conf
+FROM   intent_infer('I was charged twice on my invoice and want a refund');
+   intent_name   | hit_count | conf  
+-----------------+-----------+-------
+ billing_dispute |         3 | 1.000
+ complaint       |         1 | 0.250
+(2 rows)
+
+SELECT intent_name FROM intent_infer('the reorder button is broken');   -- "reorder" is not "order"
+ intent_name 
+-------------
+ complaint
+(1 row)
+
+SELECT intent_name FROM intent_infer('get 50% off today');
+  intent_name  
+---------------
+ fifty_percent
+(1 row)
+
+SELECT intent_name FROM intent_infer('get 50 percent off today');        -- "%" is not a wildcard
+ intent_name 
+-------------
+(0 rows)
+
+SELECT intent_name FROM intent_infer('halfXoff deal');                   -- "_" is not a wildcard
+ intent_name 
+-------------
+(0 rows)
+
+-- Auto-tag with default (NULL) metadata
+SELECT intent_auto_tag('t3', 'tickets', 'I want to buy it, what is the price at checkout?');
+ intent_auto_tag 
+-----------------
+               1
+(1 row)
+
+SELECT intent_name, round(confidence::numeric, 2) FROM intent_of('t3', 'tickets');
+ intent_name | round 
+-------------+-------
+ purchase    |  0.75
+(1 row)
+
+-- Stats (previously failed on chr(0))
+SELECT registered_intents, tagged_documents, round(avg_confidence::numeric, 3)
+FROM   intent_stats();
+ registered_intents | tagged_documents | round 
+--------------------+------------------+-------
+                  5 |                3 | 0.863
+(1 row)
+
+SELECT intent_untag('t1', 'tickets', 'purchase') AS untagged;
+ untagged 
+----------
+ t
+(1 row)
+
+SELECT count(*) FROM intent_of('t1', 'tickets');
+ count 
+-------
+     0
+(1 row)
+
+SELECT c.relname
+FROM   pg_extension e, unnest(e.extconfig) AS cfg(relid)
+JOIN   pg_class c ON c.oid = cfg.relid
+WHERE  e.extname = 'alohadb_intent'
+ORDER BY 1;
+             relname             
+---------------------------------
+ alohadb_intent_documents
+ alohadb_intent_documents_id_seq
+ alohadb_intent_registry
+(3 rows)
+
+DROP EXTENSION alohadb_intent;
+-- Upgrade path 1.0 -> 1.1
+CREATE EXTENSION alohadb_intent VERSION '1.0';
+SELECT intent_register('a', 'A', ARRAY['alpha']);
+ intent_register 
+-----------------
+ 
+(1 row)
+
+SELECT intent_tag('d1', 't', 'a');
+ intent_tag 
+------------
+ 
+(1 row)
+
+ALTER EXTENSION alohadb_intent UPDATE TO '1.1';
+SELECT * FROM intent_stats();
+ registered_intents | tagged_documents | avg_confidence 
+--------------------+------------------+----------------
+                  1 |                1 |              1
+(1 row)
+
+SELECT intent_auto_tag('d2', 't', 'alpha release');
+ intent_auto_tag 
+-----------------
+               1
+(1 row)
+
+SELECT intent_register('a', 'A', ARRAY['alpha'], 'a');
+ERROR:  intent "a" cannot have parent "a": cycle in intent hierarchy
+CONTEXT:  PL/pgSQL function alohadb_intent_check_cycle() line 7 at RAISE
+SQL statement "INSERT INTO alohadb_intent_registry
+        (intent_name, description, keywords, parent_intent)
+    VALUES
+        (p_intent_name, p_description, p_keywords, p_parent)
+    ON CONFLICT (intent_name)
+    DO UPDATE SET
+        description   = EXCLUDED.description,
+        keywords      = EXCLUDED.keywords,
+        parent_intent = EXCLUDED.parent_intent"
+PL/pgSQL function intent_register(text,text,text[],text) line 3 at SQL statement
+DROP EXTENSION alohadb_intent;
