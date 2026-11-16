@@ -627,9 +627,9 @@ A virtual filesystem with git-like versioning, branches, locks, and policies for
 
 ```sql
 CREATE EXTENSION alohadb_codefs;
-SELECT codefs_write('/src/app.py', 'print("hi")', 'main', 'initial commit');
-SELECT codefs_read('/src/app.py');
-SELECT * FROM codefs_history('/src/app.py');
+SELECT codefs_write('src/app.py', 'print("hi")', 'main', 'initial commit');
+SELECT codefs_read('src/app.py');           -- paths are relative
+SELECT * FROM codefs_history('src/app.py');
 SELECT * FROM codefs_branch_merge('feature', 'main');
 ```
 
