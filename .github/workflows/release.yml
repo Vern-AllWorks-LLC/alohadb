@@ -147,16 +147,16 @@ jobs:
               cp -nL "$lib" "$P/lib/"
             done
             find "$P/bin" -type f | while read -r f; do
-              file -b "$f" | grep -q '^ELF' && patchelf --set-rpath '$ORIGIN/../lib' "$f"
+              if file -b "$f" | grep -q '^ELF'; then patchelf --set-rpath '$ORIGIN/../lib' "$f"; fi
             done
             find "$P/lib" -maxdepth 1 -type f -name '*.so*' | while read -r f; do
-              file -b "$f" | grep -q '^ELF' && patchelf --set-rpath '$ORIGIN' "$f"
+              if file -b "$f" | grep -q '^ELF'; then patchelf --set-rpath '$ORIGIN' "$f"; fi
             done
           else
             # Copy Homebrew dylibs into lib/bundled and rewrite references.
             args=()
             while IFS= read -r f; do
-              file -b "$f" | grep -q 'Mach-O' && args+=(-x "$f")
+              if file -b "$f" | grep -q 'Mach-O'; then args+=(-x "$f"); fi
             done < <(find "$P/bin" "$P/lib" -type f)
             # Our own libraries (libpq, ...) are handled below, not bundled.
             dylibbundler -of -cd -b -i /usr/local/alohadb/lib/ "${args[@]}" \
@@ -166,7 +166,7 @@ jobs:
             find "$P/bin" "$P/lib" -type f | while read -r f; do
               file -b "$f" | grep -q 'Mach-O' || continue
               case "$f" in "$P"/lib/*.dylib) install_name_tool -id "@rpath/$(basename "$f")" "$f" 2>/dev/null || true ;; esac
-              otool -L "$f" | awk 'NR>1 {print $1}' | grep '^/usr/local/alohadb/lib/' | while read -r dep; do
+              { otool -L "$f" | awk 'NR>1 {print $1}' | grep '^/usr/local/alohadb/lib/' || true; } | while read -r dep; do
                 install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f"
               done
               install_name_tool -delete_rpath /usr/local/alohadb/lib "$f" 2>/dev/null || true
@@ -176,7 +176,7 @@ jobs:
               esac
             done
             find "$P" -type f | while read -r f; do
-              file -b "$f" | grep -q 'Mach-O' && codesign --force -s - "$f" 2>/dev/null || true
+              if file -b "$f" | grep -q 'Mach-O'; then codesign --force -s - "$f" 2>/dev/null || true; fi
             done
           fi
 
