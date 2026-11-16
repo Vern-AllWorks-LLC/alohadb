@@ -62,14 +62,24 @@ CREATE INDEX alohadb_python_executions_script_idx
 CREATE INDEX alohadb_python_executions_time_idx
     ON alohadb_python_executions (started_at DESC);
 
+-- Scripts, environments and history must survive al_dump / al_dumpall
+SELECT pg_catalog.pg_extension_config_dump('alohadb_python_envs', 'WHERE env_name <> ''default''');
+SELECT pg_catalog.pg_extension_config_dump('alohadb_python_scripts', '');
+SELECT pg_catalog.pg_extension_config_dump('alohadb_python_executions', '');
+SELECT pg_catalog.pg_extension_config_dump('alohadb_python_executions_exec_id_seq', '');
+
 -- -------------------------------------------------------------------------
 -- Core execution engine: a single plpython3u function that runs arbitrary
 -- Python code passed as a string using Python's built-in exec().
 --
--- Contract for user code:
---   - The variable `args` is a Python dict populated from the jsonb argument.
---   - User code must assign its output to `_result` (any JSON-serialisable
---     Python value, or None).
+-- Contract for user code (both styles work):
+--   - `args` is a Python dict built from the jsonb argument, `_args` is the
+--     same arguments as a JSON string, and every argument whose key is a
+--     valid Python identifier is also available as a plain variable
+--     (e.g. args["value"] can be written as just `value`).
+--   - Either `return <value>` (the code is wrapped in a function), or
+--     assign the output to `_result` at module level.
+--   - The value must be JSON-serialisable (or None).
 --   - import statements and helper definitions are allowed anywhere.
 --
 -- Patent-mitigation note:
@@ -84,21 +94,43 @@ RETURNS text
 LANGUAGE plpython3u
 AS $$
 import json
+import keyword
+import textwrap
 import traceback
 
 args = json.loads(p_args_json) if p_args_json else {}
+if not isinstance(args, dict):
+    args = {'value': args}
 
-_exec_globals = {
-    '__builtins__': __builtins__,
-    'args': args,
-    '_result': None,
-}
+_reserved = {'args', '_args', '_result'}
+g = {'__builtins__': __builtins__, '__name__': '__alohadb__'}
+for k, v in args.items():
+    if (isinstance(k, str) and k.isidentifier()
+            and not keyword.iskeyword(k) and k not in _reserved):
+        g[k] = v
+g.update({'args': args, '_args': p_args_json or '{}', '_result': None})
 
 try:
-    exec(compile(p_code, '<alohadb_python>', 'exec'), _exec_globals)
-    return json.dumps(_exec_globals.get('_result'))
-except Exception:
-    raise Exception(traceback.format_exc())
+    try:
+        code = compile(p_code, '<alohadb_python>', 'exec')
+        wrapped = False
+    except SyntaxError as e:
+        if 'outside function' not in str(e):
+            raise
+        # Code uses a top-level "return": run it as a function body.
+        src = 'def __alohadb_main__():\n' + textwrap.indent(p_code, '    ') + '\n'
+        code = compile(src, '<alohadb_python>', 'exec')
+        wrapped = True
+    exec(code, g)
+    out = g['__alohadb_main__']() if wrapped else g.get('_result')
+    return json.dumps(out)
+except Exception as e:
+    # Report only the user's own frames, not the runner's internals.
+    frames = [f for f in traceback.extract_tb(e.__traceback__)
+              if f.filename == '<alohadb_python>']
+    msg = ''.join(traceback.format_list(frames)) + \
+          ''.join(traceback.format_exception_only(type(e), e))
+    raise Exception('Python error:\n' + msg.rstrip()) from None
 $$;
 
 -- -------------------------------------------------------------------------
@@ -113,34 +145,34 @@ LANGUAGE plpgsql VOLATILE
 AS $$
 DECLARE
     raw_result  text;
-    result      jsonb;
+    v_result    jsonb;
     started     timestamptz := clock_timestamp();
-    exec_id     bigint;
+    v_exec_id   bigint;
 BEGIN
     INSERT INTO alohadb_python_executions (exec_mode, args)
     VALUES ('sync', p_args)
-    RETURNING alohadb_python_executions.exec_id INTO exec_id;
+    RETURNING alohadb_python_executions.exec_id INTO v_exec_id;
 
     BEGIN
         raw_result := alohadb_python_runner(p_code, p_args::text);
-        result     := raw_result::jsonb;
+        v_result   := raw_result::jsonb;
 
         UPDATE alohadb_python_executions
-        SET result       = result,
+        SET result       = v_result,
             completed_at = clock_timestamp(),
             duration_ms  = extract(epoch FROM clock_timestamp() - started) * 1000
-        WHERE alohadb_python_executions.exec_id = exec_id;
+        WHERE alohadb_python_executions.exec_id = v_exec_id;
 
     EXCEPTION WHEN OTHERS THEN
         UPDATE alohadb_python_executions
         SET error_message = SQLERRM,
             completed_at  = clock_timestamp(),
             duration_ms   = extract(epoch FROM clock_timestamp() - started) * 1000
-        WHERE alohadb_python_executions.exec_id = exec_id;
+        WHERE alohadb_python_executions.exec_id = v_exec_id;
         RAISE;
     END;
 
-    RETURN result;
+    RETURN v_result;
 END;
 $$;
 
@@ -190,9 +222,9 @@ DECLARE
     script_code text;
     script_ver  int;
     raw_result  text;
-    result      jsonb;
+    v_result    jsonb;
     started     timestamptz := clock_timestamp();
-    exec_id     bigint;
+    v_exec_id   bigint;
 BEGIN
     SELECT code, version
     INTO   script_code, script_ver
@@ -210,28 +242,28 @@ BEGIN
         (script_name, script_version, exec_mode, args)
     VALUES
         (p_script_name, script_ver, 'sync', p_args)
-    RETURNING alohadb_python_executions.exec_id INTO exec_id;
+    RETURNING alohadb_python_executions.exec_id INTO v_exec_id;
 
     BEGIN
         raw_result := alohadb_python_runner(script_code, p_args::text);
-        result     := raw_result::jsonb;
+        v_result   := raw_result::jsonb;
 
         UPDATE alohadb_python_executions
-        SET result       = result,
+        SET result       = v_result,
             completed_at = clock_timestamp(),
             duration_ms  = extract(epoch FROM clock_timestamp() - started) * 1000
-        WHERE alohadb_python_executions.exec_id = exec_id;
+        WHERE alohadb_python_executions.exec_id = v_exec_id;
 
     EXCEPTION WHEN OTHERS THEN
         UPDATE alohadb_python_executions
         SET error_message = SQLERRM,
             completed_at  = clock_timestamp(),
             duration_ms   = extract(epoch FROM clock_timestamp() - started) * 1000
-        WHERE alohadb_python_executions.exec_id = exec_id;
+        WHERE alohadb_python_executions.exec_id = v_exec_id;
         RAISE;
     END;
 
-    RETURN result;
+    RETURN v_result;
 END;
 $$;
 
@@ -285,7 +317,7 @@ CREATE FUNCTION python_get(
     p_version     int DEFAULT NULL
 )
 RETURNS text
-LANGUAGE sql STABLE STRICT
+LANGUAGE sql STABLE
 AS $$
     SELECT code
     FROM   alohadb_python_scripts
