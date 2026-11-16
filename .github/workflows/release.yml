@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v20.0.0)'
+        description: 'Tag to release (e.g. v20.1.0); also used in archive names'
         required: true
+      publish:
+        description: 'Upload to the GitHub Release (false = build artifacts only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +21,7 @@ jobs:
   build:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +32,7 @@ jobs:
             platform: linux-aarch64
           - os: macos-latest
             platform: macos-arm64
-          - os: macos-13
+          - os: macos-15-intel
             platform: macos-x86_64
           - os: windows-latest
             platform: windows-x86_64
@@ -111,7 +116,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           DESTDIR="$PWD/stage" ninja -C builddir install
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.tar.gz"
           tar -czf "$ARCHIVE" -C stage .
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
@@ -137,17 +142,27 @@ jobs:
         shell: msys2 {0}
         run: |
           DESTDIR="$PWD/stage" ninja -C builddir install
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           ARCHIVE="alohadb-${VERSION}-${{ matrix.platform }}.zip"
           cd stage && zip -r "../$ARCHIVE" . && cd ..
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
-      # ---- Upload to GitHub Release -----------------------------------------
+      # ---- Artifacts (always) and GitHub Release (tags / publish=true) ------
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          retention-days: 14
+
       - name: Upload to GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || github.event.inputs.tag }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
