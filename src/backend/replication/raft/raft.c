@@ -24,6 +24,7 @@
 #include <math.h>
 
 #include "access/xlog.h"
+#include "common/pg_prng.h"
 #include "miscadmin.h"
 #include "replication/raft.h"
 #include "replication/walsender_private.h"
@@ -338,8 +339,12 @@ RaftResetElectionTimer(void)
 {
 	int			jitter;
 
-	/* pg_prng_uint32 is not available in all contexts; use random() */
-	jitter = (int) (random() % (raft_election_timeout_ms + 1));
+	/*
+	 * pg_global_prng_state is seeded for every server process; unlike
+	 * random() it is also available on Windows.
+	 */
+	jitter = (int) pg_prng_uint64_range(&pg_global_prng_state, 0,
+										(uint64) raft_election_timeout_ms);
 
 	SpinLockAcquire(&RaftCtl->mutex);
 	RaftCtl->electionTimeoutMs = raft_election_timeout_ms + jitter;
