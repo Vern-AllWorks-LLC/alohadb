@@ -231,7 +231,7 @@ check_pkg_installed() {
     if [[ "$PKG_MGR" == "apt" ]]; then
         dpkg -l "$pkg" 2>/dev/null | grep -q "^ii" && return 0 || return 1
     else
-        rpm -q "$pkg" &>/dev/null && return 0 || return 1
+        rpm -q --whatprovides "$pkg" &>/dev/null && return 0 || return 1
     fi
 }
 

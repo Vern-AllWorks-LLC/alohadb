@@ -14,6 +14,7 @@
 #define VECTOR_H
 
 #include "fmgr.h"
+#include "varatt.h"
 
 /* Maximum number of dimensions for a vector */
 #define VECTOR_MAX_DIM		16384

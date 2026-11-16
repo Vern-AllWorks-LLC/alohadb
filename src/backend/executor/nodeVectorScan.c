@@ -33,6 +33,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "catalog/pg_type.h"
+#include "commands/explain_format.h"
 #include "commands/explain_state.h"
 #include "executor/execVectorExpr.h"
 #include "executor/executor.h"

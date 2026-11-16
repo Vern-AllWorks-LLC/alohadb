@@ -1,0 +1,5 @@
+comment = 'AlohaDB Unified - Unified streaming and batch query model over the same relation'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_unified'
+schema = public
+relocatable = false

@@ -1,0 +1,1927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlohaDB 20.0 User Guide - Vern AllWorks LLC</title>
+<style>
+/* ============================================================
+   Base reset and typography
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #ffffff;
+  --fg:          #1a1a1a;
+  --fg-muted:    #4a4a4a;
+  --accent:      #1a4f8a;
+  --accent-lt:   #2a6abf;
+  --border:      #d0d0d0;
+  --code-bg:     #f5f5f5;
+  --code-fg:     #1a1a1a;
+  --table-hdr:   #1a4f8a;
+  --table-hdr-fg:#ffffff;
+  --table-alt:   #f0f4fb;
+  --note-bg:     #eaf2fb;
+  --note-border: #2a6abf;
+  --warn-bg:     #fff8e1;
+  --warn-border: #f9a825;
+  --tip-bg:      #e8f5e9;
+  --tip-border:  #388e3c;
+  --sidebar-bg:  #f0f4fb;
+  --nav-bg:      #1a4f8a;
+  --nav-fg:      #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:          #000000;
+    --fg:          #e8e8e8;
+    --fg-muted:    #a0a0a0;
+    --accent:      #5b9fe0;
+    --accent-lt:   #7bbaf5;
+    --border:      #333333;
+    --code-bg:     #111111;
+    --code-fg:     #d4d4d4;
+    --table-hdr:   #0d2f55;
+    --table-hdr-fg:#e8e8e8;
+    --table-alt:   #0a0a1a;
+    --note-bg:     #0a1a2e;
+    --note-border: #5b9fe0;
+    --warn-bg:     #1a1500;
+    --warn-border: #c8960a;
+    --tip-bg:      #0a1a0a;
+    --tip-border:  #4caf50;
+    --sidebar-bg:  #0a0a1a;
+    --nav-bg:      #0d2f55;
+    --nav-fg:      #e8e8e8;
+  }
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* ============================================================
+   Layout
+   ============================================================ */
+.layout { display: flex; min-height: 100vh; }
+
+nav#sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 0;
+}
+
+nav#sidebar .sidebar-brand {
+  background: var(--nav-bg);
+  color: var(--nav-fg);
+  padding: 20px 18px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-bottom: 2px solid var(--accent-lt);
+}
+
+nav#sidebar .sidebar-brand small {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-top: 3px;
+}
+
+nav#sidebar ul {
+  list-style: none;
+  padding: 10px 0;
+}
+
+nav#sidebar ul li a {
+  display: block;
+  padding: 7px 18px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.9rem;
+  border-left: 3px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+nav#sidebar ul li a:hover {
+  background: rgba(90, 159, 224, 0.12);
+  border-left-color: var(--accent);
+}
+
+nav#sidebar ul li.section-header a {
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  padding-top: 14px;
+  cursor: default;
+}
+
+nav#sidebar ul li.indent a { padding-left: 32px; }
+nav#sidebar ul li.indent2 a { padding-left: 46px; }
+
+main#content {
+  flex: 1;
+  max-width: 960px;
+  padding: 40px 48px;
+  overflow-x: hidden;
+}
+
+/* ============================================================
+   Headings
+   ============================================================ */
+h1 { font-size: 2.2rem; color: var(--accent); margin-bottom: 12px; border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
+h2 { font-size: 1.65rem; color: var(--accent); margin-top: 48px; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { font-size: 1.25rem; color: var(--fg); margin-top: 32px; margin-bottom: 10px; }
+h4 { font-size: 1.05rem; color: var(--fg); margin-top: 22px; margin-bottom: 8px; font-weight: 600; }
+h5 { font-size: 0.95rem; color: var(--fg-muted); margin-top: 18px; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ============================================================
+   Paragraphs and lists
+   ============================================================ */
+p { margin-bottom: 14px; }
+ul, ol { margin: 10px 0 14px 24px; }
+li { margin-bottom: 5px; }
+strong { color: var(--fg); }
+
+/* ============================================================
+   Code
+   ============================================================ */
+code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.875em;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+pre {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 16px 0 20px;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* ============================================================
+   Tables
+   ============================================================ */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 22px;
+  font-size: 0.9rem;
+}
+th {
+  background: var(--table-hdr);
+  color: var(--table-hdr-fg);
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+}
+td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:nth-child(even) td { background: var(--table-alt); }
+
+/* ============================================================
+   Callout boxes
+   ============================================================ */
+.note, .warning, .tip {
+  border-left: 4px solid;
+  padding: 14px 18px;
+  margin: 18px 0;
+  border-radius: 0 6px 6px 0;
+}
+.note { background: var(--note-bg); border-color: var(--note-border); }
+.warning { background: var(--warn-bg); border-color: var(--warn-border); }
+.tip { background: var(--tip-bg); border-color: var(--tip-border); }
+
+.note strong, .warning strong, .tip strong {
+  display: block;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.note strong { color: var(--note-border); }
+.warning strong { color: var(--warn-border); }
+.tip strong { color: var(--tip-border); }
+
+/* ============================================================
+   Misc
+   ============================================================ */
+hr { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+
+.badge {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.platform-badges span {
+  display: inline-block;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 14px;
+  margin: 3px 4px 3px 0;
+}
+
+header.doc-header {
+  background: var(--nav-bg);
+  color: var(--nav-fg);
+  padding: 32px 48px;
+  margin: -40px -48px 40px;
+}
+
+header.doc-header h1 {
+  color: var(--nav-fg);
+  border-color: rgba(255,255,255,0.3);
+  font-size: 2.4rem;
+}
+
+header.doc-header .subtitle {
+  color: rgba(255,255,255,0.8);
+  font-size: 1rem;
+  margin-top: 6px;
+}
+
+header.doc-header .meta {
+  margin-top: 16px;
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.65);
+}
+
+.toc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 32px;
+  list-style: none;
+  margin: 0;
+}
+.toc-grid li a { color: var(--accent); text-decoration: none; }
+.toc-grid li a:hover { text-decoration: underline; }
+
+@media (max-width: 900px) {
+  nav#sidebar { display: none; }
+  main#content { padding: 24px 20px; }
+  .toc-grid { grid-template-columns: 1fr; }
+  header.doc-header { margin: -24px -20px 30px; padding: 24px 20px; }
+}
+
+@media print {
+  nav#sidebar { display: none; }
+  .layout { display: block; }
+  main#content { max-width: 100%; padding: 0; }
+  pre { page-break-inside: avoid; }
+  h2, h3 { page-break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ================================================================
+     SIDEBAR NAVIGATION
+     ================================================================ -->
+<nav id="sidebar">
+  <div class="sidebar-brand">
+    AlohaDB 20.0
+    <small>User Guide &mdash; Vern AllWorks LLC</small>
+  </div>
+  <ul>
+    <li class="section-header"><a>Overview</a></li>
+    <li><a href="#overview">What is AlohaDB?</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+
+    <li class="section-header"><a>Setup</a></li>
+    <li><a href="#requirements">System Requirements</a></li>
+    <li><a href="#install-linux">Install on Linux</a></li>
+    <li><a href="#install-windows">Install on Windows</a></li>
+    <li><a href="#install-macos">Install on macOS</a></li>
+    <li><a href="#first-steps">First Steps</a></li>
+
+    <li class="section-header"><a>Extensions</a></li>
+    <li><a href="#ext-parquet">alohadb_parquet</a></li>
+    <li><a href="#ext-vector">alohadb_vector</a></li>
+    <li><a href="#ext-geo">alohadb_geo</a></li>
+    <li><a href="#ext-ontology">alohadb_ontology</a></li>
+    <li><a href="#ext-context">alohadb_context</a></li>
+    <li><a href="#ext-intent">alohadb_intent</a></li>
+    <li><a href="#ext-python">alohadb_python</a></li>
+    <li><a href="#ext-unified">alohadb_unified</a></li>
+    <li><a href="#ext-pipeline">alohadb_pipeline</a></li>
+    <li><a href="#ext-kafka">alohadb_kafka</a></li>
+    <li><a href="#ext-objectstore">alohadb_objectstore</a></li>
+    <li><a href="#ext-model-registry">alohadb_model_registry</a></li>
+    <li><a href="#ext-other">Other Extensions</a></li>
+
+    <li class="section-header"><a>Reference</a></li>
+    <li><a href="#pg-builtins">PostgreSQL Built-ins</a></li>
+    <li><a href="#guc">Configuration (GUC)</a></li>
+
+    <li class="section-header"><a>Quality</a></li>
+    <li><a href="#testing">Testing</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+
+    <li class="section-header"><a>Release</a></li>
+    <li><a href="#releases">Release Notes</a></li>
+    <li><a href="#license">License</a></li>
+  </ul>
+</nav>
+
+<!-- ================================================================
+     MAIN CONTENT
+     ================================================================ -->
+<main id="content">
+
+<header class="doc-header">
+  <h1>AlohaDB 20.0 User Guide</h1>
+  <div class="subtitle">Complete reference for installation, extensions, testing, and troubleshooting</div>
+  <div class="meta">
+    Version 20.0 &nbsp;&bull;&nbsp;
+    Published by Vern AllWorks LLC &nbsp;&bull;&nbsp;
+    <a href="https://www.OpenCan.ai" style="color:rgba(255,255,255,0.75)">https://www.OpenCan.ai</a>
+    <br>
+    <span class="platform-badges" style="margin-top:10px;display:block">
+      <span>Windows</span><span>Linux</span><span>macOS</span>
+    </span>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<h2 id="overview">What is AlohaDB?</h2>
+
+<p>AlohaDB is a PostgreSQL 18-based analytical and AI-native database platform developed by Vern AllWorks LLC. It extends PostgreSQL with over 34 production-grade extensions covering vector search, geospatial queries, ML model management, cloud object storage, ontology-driven context search, ETL pipelines, streaming data ingestion, and Python-in-database execution.</p>
+
+<p>AlohaDB is a drop-in replacement for PostgreSQL 18. Every standard PostgreSQL client driver, tool, and query works without modification. Extensions are optional and loaded individually with <code>CREATE EXTENSION</code>.</p>
+
+<h3 id="architecture">Architecture</h3>
+
+<p>AlohaDB follows the standard PostgreSQL extension model:</p>
+
+<ul>
+  <li>Each extension ships a <code>.control</code> file, one or more <code>.sql</code> install scripts, and a shared library (<code>.so</code> / <code>.dll</code> / <code>.dylib</code>).</li>
+  <li>Extensions that require background processing (cron, pipeline, kafka) register a <strong>background worker</strong> via <code>shared_preload_libraries</code>.</li>
+  <li>Extensions that rely on in-database Python use PostgreSQL's built-in <code>plpython3u</code> procedural language.</li>
+  <li>All algorithms use open standards with prior art predating any applicable patent window. HNSW (US10380099) is deliberately not implemented; IVFFlat (Lloyd's k-means 1957, inverted index 1960s) is used instead.</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="requirements">Minimum System Requirements</h2>
+
+<table>
+  <thead><tr><th>Component</th><th>Minimum</th><th>Recommended</th></tr></thead>
+  <tbody>
+    <tr><td>Operating System</td><td>Windows 10 64-bit, Ubuntu 20.04, macOS 12</td><td>Windows 11 / Ubuntu 22.04 LTS / macOS 14</td></tr>
+    <tr><td>CPU</td><td>2 cores, x86-64 or ARM64</td><td>8+ cores</td></tr>
+    <tr><td>RAM</td><td>2 GB</td><td>16 GB+</td></tr>
+    <tr><td>Disk</td><td>2 GB free (install)</td><td>SSD, 50 GB+</td></tr>
+    <tr><td>PostgreSQL base</td><td>18.0</td><td>18.1+</td></tr>
+    <tr><td>Python (optional)</td><td>3.9</td><td>3.11 or 3.12</td></tr>
+    <tr><td>libcurl (optional)</td><td>7.68</td><td>8.x (for objectstore)</td></tr>
+    <tr><td>OpenSSL (optional)</td><td>1.1</td><td>3.x (for objectstore S3/GCS/Azure)</td></tr>
+    <tr><td>librdkafka (optional)</td><td>1.8</td><td>2.x (for Kafka consumer)</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>Note</strong>
+  The core AlohaDB server requires only the PostgreSQL 18 runtime. Optional extensions (objectstore, kafka) require their stated libraries. If a library is absent, those extensions are not built but all others compile and run normally.
+</div>
+
+<h3>Port Requirements</h3>
+<table>
+  <thead><tr><th>Service</th><th>Default Port</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>AlohaDB (PostgreSQL)</td><td>5432</td><td>Configurable via <code>port</code> in postgresql.conf</td></tr>
+    <tr><td>pgAdmin web UI (optional)</td><td>5050</td><td>Not bundled; install separately</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="install-linux">Installation on Linux</h2>
+
+<h3>Supported Distributions</h3>
+<ul>
+  <li>Ubuntu 20.04 LTS, 22.04 LTS, 24.04 LTS</li>
+  <li>Debian 11 (Bullseye), 12 (Bookworm)</li>
+  <li>RHEL / Rocky Linux / AlmaLinux 8, 9</li>
+  <li>Fedora 38+</li>
+</ul>
+
+<h3>Install from Package (Debian / Ubuntu)</h3>
+
+<pre><code>## Add the AlohaDB repository
+curl -fsSL https://www.OpenCan.ai/repo/alohadb.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/alohadb.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/alohadb.gpg] \
+  https://www.OpenCan.ai/repo/apt $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/alohadb.list
+
+sudo apt update
+sudo apt install alohadb-20
+
+## Start the service
+sudo systemctl enable --now alohadb</code></pre>
+
+<h3>Install from Package (RHEL / Rocky / Alma)</h3>
+
+<pre><code>sudo dnf install -y https://www.OpenCan.ai/repo/rpm/alohadb-20-repo-el9.rpm
+sudo dnf install -y alohadb-20 alohadb-20-contrib
+sudo systemctl enable --now alohadb-20</code></pre>
+
+<h3>Install from Source (all Linux distros)</h3>
+
+<pre><code>## Prerequisites
+sudo apt install -y build-essential meson ninja-build pkg-config \
+  libreadline-dev zlib1g-dev libssl-dev libcurl4-openssl-dev \
+  python3-dev libpython3-dev
+
+## Download and extract
+wget https://www.OpenCan.ai/downloads/alohadb-20.0.tar.gz
+tar -xzf alohadb-20.0.tar.gz
+cd alohadb-20.0
+
+## Build
+meson setup build --prefix=/usr/local/alohadb
+cd build
+ninja
+sudo ninja install
+
+## Initialize database cluster
+sudo useradd -r -m -d /var/lib/alohadb alohadb
+sudo -u alohadb /usr/local/alohadb/bin/initdb \
+  -D /var/lib/alohadb/data
+
+## Start server
+sudo -u alohadb /usr/local/alohadb/bin/pg_ctl \
+  -D /var/lib/alohadb/data start</code></pre>
+
+<h3>Post-Installation (Linux)</h3>
+
+<pre><code>## Connect
+psql -U alohadb -h localhost -p 5432 postgres
+
+## Verify version
+SELECT version();
+
+## Load an extension
+CREATE EXTENSION alohadb_vector;</code></pre>
+
+<div class="warning">
+  <strong>Warning</strong>
+  Extensions that use background workers (<code>alohadb_cron</code>, <code>alohadb_pipeline</code>, <code>alohadb_kafka</code>) must be listed in <code>shared_preload_libraries</code> in <code>postgresql.conf</code> before the server starts. Adding them after startup requires a server restart.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="install-windows">Installation on Windows</h2>
+
+<h3>Supported Versions</h3>
+<ul>
+  <li>Windows 10 (version 1903+), x86-64</li>
+  <li>Windows 11, x86-64</li>
+  <li>Windows Server 2019, 2022</li>
+</ul>
+
+<h3>Installer</h3>
+<ol>
+  <li>Download <code>alohadb-20.0-windows-x64.exe</code> from <a href="https://www.OpenCan.ai">https://www.OpenCan.ai</a>.</li>
+  <li>Right-click the installer and choose <strong>Run as administrator</strong>.</li>
+  <li>Follow the setup wizard. The default install directory is <code>C:\Program Files\AlohaDB\20</code>.</li>
+  <li>Choose the <strong>data directory</strong> (default: <code>C:\ProgramData\AlohaDB\20\data</code>).</li>
+  <li>Set a superuser password when prompted.</li>
+  <li>The installer registers AlohaDB as a Windows service (<code>alohadb-20</code>) and starts it automatically.</li>
+</ol>
+
+<h3>Command-Line Tools (Windows)</h3>
+
+<p>After installation, open <strong>Command Prompt</strong> or <strong>PowerShell</strong> as administrator:</p>
+
+<pre><code>## Add to PATH (if not done by installer)
+set PATH=C:\Program Files\AlohaDB\20\bin;%PATH%
+
+## Connect
+psql -U postgres -h localhost -p 5432
+
+## Service management
+net start alohadb-20
+net stop  alohadb-20
+
+## Or via sc.exe
+sc query alohadb-20</code></pre>
+
+<h3>Environment Variables (Windows)</h3>
+<table>
+  <thead><tr><th>Variable</th><th>Purpose</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><code>PGDATA</code></td><td>Data directory path</td><td><code>C:\ProgramData\AlohaDB\20\data</code></td></tr>
+    <tr><td><code>PGPORT</code></td><td>Server port</td><td><code>5432</code></td></tr>
+    <tr><td><code>PGUSER</code></td><td>Default login user</td><td><code>postgres</code></td></tr>
+    <tr><td><code>PGPASSWORD</code></td><td>Password (not recommended for production)</td><td></td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>Note</strong>
+  On Windows, the Python-dependent extension (<code>alohadb_python</code>) requires <strong>Python 3.9+</strong> to be installed system-wide and the <code>python3.dll</code> to be on <code>PATH</code>. Install Python from <a href="https://www.python.org">python.org</a> and check "Add Python to PATH".
+</div>
+
+<!-- ================================================================ -->
+<h2 id="install-macos">Installation on macOS</h2>
+
+<h3>Supported Versions</h3>
+<ul>
+  <li>macOS 12 Monterey, x86-64 and Apple Silicon (arm64)</li>
+  <li>macOS 13 Ventura</li>
+  <li>macOS 14 Sonoma</li>
+  <li>macOS 15 Sequoia</li>
+</ul>
+
+<h3>Install via Homebrew (Recommended)</h3>
+
+<pre><code>## Add the AlohaDB tap
+brew tap vernallworks/alohadb https://www.OpenCan.ai/homebrew-alohadb
+
+## Install
+brew install alohadb
+
+## Start as a service
+brew services start alohadb
+
+## Connect
+psql -U $(whoami) -h localhost alohadb</code></pre>
+
+<h3>Install from PKG Installer</h3>
+<ol>
+  <li>Download <code>alohadb-20.0-macos-universal.pkg</code> from <a href="https://www.OpenCan.ai">https://www.OpenCan.ai</a>.</li>
+  <li>Open the package and follow the installation wizard.</li>
+  <li>AlohaDB installs to <code>/Library/AlohaDB/20</code>.</li>
+  <li>A launch agent is registered at <code>/Library/LaunchDaemons/ai.opencan.alohadb.plist</code>.</li>
+</ol>
+
+<pre><code>## Start / stop via launchctl
+sudo launchctl load   /Library/LaunchDaemons/ai.opencan.alohadb.plist
+sudo launchctl unload /Library/LaunchDaemons/ai.opencan.alohadb.plist
+
+## Connect
+/Library/AlohaDB/20/bin/psql -U postgres -h localhost</code></pre>
+
+<h3>Install from Source (macOS)</h3>
+
+<pre><code>## Prerequisites via Homebrew
+brew install meson ninja pkg-config openssl@3 curl readline python3
+
+## Export pkg-config paths (Apple Silicon)
+export PKG_CONFIG_PATH="/opt/homebrew/opt/openssl@3/lib/pkgconfig:\
+/opt/homebrew/opt/curl/lib/pkgconfig"
+
+## Build
+tar -xzf alohadb-20.0.tar.gz && cd alohadb-20.0
+meson setup build --prefix=/usr/local
+cd build && ninja
+sudo ninja install</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="first-steps">First Steps</h2>
+
+<h3>Create a Database</h3>
+
+<pre><code>-- Connect as superuser
+psql -U postgres
+
+-- Create a database and user
+CREATE DATABASE myapp;
+CREATE USER appuser WITH PASSWORD 'strongpassword';
+GRANT ALL PRIVILEGES ON DATABASE myapp TO appuser;
+
+-- Connect to it
+\c myapp</code></pre>
+
+<h3>Enable Extensions</h3>
+
+<pre><code>-- Enable AlohaDB extensions
+CREATE EXTENSION alohadb_vector;
+CREATE EXTENSION alohadb_geo;
+CREATE EXTENSION alohadb_parquet;
+CREATE EXTENSION alohadb_ontology;
+
+-- Verify
+SELECT extname, extversion
+FROM   pg_extension
+WHERE  extname LIKE 'alohadb%'
+ORDER BY extname;</code></pre>
+
+<h3>Background-Worker Extensions (postgresql.conf)</h3>
+
+<p>Add to <code>postgresql.conf</code> before server start:</p>
+
+<pre><code>shared_preload_libraries = 'alohadb_cron,alohadb_pipeline,alohadb_kafka'
+
+# Optional tuning
+alohadb.cron_check_interval    = 60     # seconds
+alohadb.pipeline_check_interval = 5     # seconds
+alohadb.pipeline_max_parallel   = 4
+alohadb.kafka_poll_interval_ms  = 1000</code></pre>
+
+<!-- ================================================================ -->
+<hr>
+<h2>Extension Reference</h2>
+
+<!-- ================================================================ -->
+<h2 id="ext-parquet">alohadb_parquet <span class="badge">v1.1</span></h2>
+
+<p>Read Parquet, CSV, and JSON files directly from SQL. Version 1.1 adds a full Parquet column reader supporting PLAIN and PLAIN_DICTIONARY encoding with UNCOMPRESSED and SNAPPY compression.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_parquet;
+-- or upgrade from 1.0:
+ALTER EXTENSION alohadb_parquet UPDATE TO '1.1';</code></pre>
+
+<h3>Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Returns</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>read_parquet(file_path text, options jsonb DEFAULT '{}')</code></td><td><code>SETOF jsonb</code></td><td>Read a Parquet file; returns one jsonb row per data row</td></tr>
+    <tr><td><code>read_csv(file_path text, delimiter text DEFAULT ',', has_header bool DEFAULT true)</code></td><td><code>SETOF jsonb</code></td><td>Read a CSV file</td></tr>
+    <tr><td><code>read_json(file_path text)</code></td><td><code>SETOF jsonb</code></td><td>Read a newline-delimited JSON file</td></tr>
+  </tbody>
+</table>
+
+<h3>Configuration</h3>
+<pre><code>-- Allow reads from specific directories
+SET alohadb.parquet_allowed_paths = '/data/files,/tmp';</code></pre>
+
+<h3>Examples</h3>
+
+<pre><code>-- Read a Parquet file into a table
+CREATE TABLE sales AS
+SELECT
+    (row->>'product_id')::int    AS product_id,
+    (row->>'revenue')::numeric   AS revenue,
+    (row->>'sale_date')::date    AS sale_date
+FROM read_parquet('/data/sales.parquet');
+
+-- Query a CSV file directly
+SELECT row->>'name' AS name,
+       (row->>'age')::int AS age
+FROM   read_csv('/data/users.csv')
+WHERE  (row->>'country') = 'US'
+ORDER BY (row->>'age')::int DESC
+LIMIT  10;
+
+-- Read JSON and aggregate
+SELECT (row->>'category') AS cat, count(*) AS n
+FROM   read_json('/data/events.jsonl')
+GROUP  BY 1
+ORDER  BY 2 DESC;</code></pre>
+
+<div class="note">
+  <strong>Note</strong>
+  For complex nested or repeated Parquet schemas, use <code>libarrow</code> directly via the <code>alohadb_cdc_arrow</code> extension. <code>read_parquet</code> supports flat schemas only.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="ext-vector">alohadb_vector <span class="badge">v1.0</span></h2>
+
+<p>Dense vector type and IVFFlat approximate nearest-neighbor (ANN) search. Uses Lloyd's k-means (1957/1982) and inverted-file indexing — both prior-art algorithms with no active patent encumbrances. HNSW (US10380099) is intentionally not implemented.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_vector;</code></pre>
+
+<h3>Type</h3>
+<p>The <code>vector</code> type stores a fixed-length array of single-precision floats. Text format: <code>[f1,f2,...,fn]</code>.</p>
+
+<h3>Operators and Functions</h3>
+<table>
+  <thead><tr><th>Operator / Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>a &lt;-&gt; b</code></td><td>L2 (Euclidean) distance</td></tr>
+    <tr><td><code>a &lt;=&gt; b</code></td><td>Cosine distance (1 &minus; similarity)</td></tr>
+    <tr><td><code>a &lt;#&gt; b</code></td><td>Negative inner product (for max-IP search)</td></tr>
+    <tr><td><code>vector_dims(v)</code></td><td>Number of dimensions</td></tr>
+    <tr><td><code>vector_l2_distance(a,b)</code></td><td>L2 distance (function form)</td></tr>
+    <tr><td><code>vector_cosine_distance(a,b)</code></td><td>Cosine distance (function form)</td></tr>
+    <tr><td><code>vector_neg_dot_product(a,b)</code></td><td>Negative dot product (function form)</td></tr>
+  </tbody>
+</table>
+
+<h3>Index Management</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>vector_index_create(index_name, source_table, vector_col, id_col, n_lists, n_probes, metric)</code></td><td>Register an IVFFlat index</td></tr>
+    <tr><td><code>vector_index_rebuild(index_name)</code></td><td>Train/retrain index using Lloyd's k-means</td></tr>
+    <tr><td><code>vector_index_insert(index_name, id, vec)</code></td><td>Insert one vector into a trained index</td></tr>
+    <tr><td><code>vector_index_search(index_name, query, k, n_probes)</code></td><td>ANN search; returns <code>(entry_id, distance)</code></td></tr>
+    <tr><td><code>vector_index_stats(index_name)</code></td><td>Show index metadata and training status</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Create a product embeddings table
+CREATE TABLE products (
+    id        bigserial PRIMARY KEY,
+    name      text,
+    embedding vector
+);
+
+-- Insert data
+INSERT INTO products (name, embedding) VALUES
+    ('Blue Widget',  '[0.91, 0.12, 0.03, 0.42]'),
+    ('Red Widget',   '[0.05, 0.88, 0.11, 0.37]'),
+    ('Green Gadget', '[0.44, 0.41, 0.82, 0.09]');
+
+-- Build IVFFlat index (n_lists=2, n_probes=1, L2 metric)
+SELECT vector_index_create('prod_emb', 'products', 'embedding', 'id', 2, 1, 'l2');
+SELECT vector_index_rebuild('prod_emb');
+
+-- Search for nearest neighbors
+SELECT p.name, r.distance
+FROM   vector_index_search('prod_emb', '[0.90, 0.10, 0.05, 0.40]'::vector, 3) r
+JOIN   products p ON p.id::text = r.entry_id
+ORDER  BY r.distance;</code></pre>
+
+<div class="tip">
+  <strong>Tip</strong>
+  After bulk inserts, call <code>vector_index_rebuild()</code> to retrain centroids. For incremental inserts, use <code>vector_index_insert()</code> to assign new vectors to the existing centroids without a full rebuild.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="ext-geo">alohadb_geo <span class="badge">v1.0</span></h2>
+
+<p>2D geometry types and spatial operations. All algorithms are decades-old prior art: ray-casting point-in-polygon (Franklin 1970), AABB intersection (Roberts 1963), shoelace area formula (Gauss 1795), Haversine distance.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_geo;</code></pre>
+
+<h3>Types</h3>
+<table>
+  <thead><tr><th>Type</th><th>Format</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>geo_point</code></td><td><code>x,y</code> or <code>POINT(x y)</code></td><td>2-D point (16 bytes)</td></tr>
+    <tr><td><code>geo_bbox</code></td><td><code>xmin,ymin,xmax,ymax</code> or <code>BOX(...)</code></td><td>Axis-aligned bounding box (32 bytes)</td></tr>
+    <tr><td><code>geo_polygon</code></td><td>WKT: <code>POLYGON((x1 y1,...))</code></td><td>Variable-length polygon</td></tr>
+    <tr><td><code>geo_circle</code></td><td><code>cx,cy,radius</code> or <code>CIRCLE(cx cy r)</code></td><td>Circle (24 bytes)</td></tr>
+  </tbody>
+</table>
+
+<h3>Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ST_Point(x, y)</code></td><td>Construct a geo_point</td></tr>
+    <tr><td><code>ST_MakeBox(xmin,ymin,xmax,ymax)</code></td><td>Construct a geo_bbox</td></tr>
+    <tr><td><code>ST_Distance(a, b)</code></td><td>Euclidean distance between two points</td></tr>
+    <tr><td><code>ST_DistanceSphere(a, b)</code></td><td>Haversine great-circle distance in metres (lon/lat inputs)</td></tr>
+    <tr><td><code>ST_Contains(poly, pt)</code></td><td>True if polygon contains point (ray-casting)</td></tr>
+    <tr><td><code>ST_Within(pt, poly)</code></td><td>Alias for ST_Contains with swapped args</td></tr>
+    <tr><td><code>ST_Intersects(bbox_a, bbox_b)</code></td><td>AABB overlap test</td></tr>
+    <tr><td><code>ST_Area(poly)</code></td><td>Signed polygon area (shoelace formula)</td></tr>
+    <tr><td><code>ST_BoundingBox(poly)</code></td><td>Minimum bounding rectangle of a polygon</td></tr>
+    <tr><td><code>ST_Buffer(pt, radius)</code></td><td>Create a geo_circle from point + radius</td></tr>
+    <tr><td><code>a &amp;&amp; b</code></td><td>Bounding-box overlap operator</td></tr>
+    <tr><td><code>ST_NearbyPoints(center, radius_m, table, column, limit)</code></td><td>Find nearby geo_point rows within radius (metres)</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Store location data
+CREATE TABLE stores (
+    id      bigserial PRIMARY KEY,
+    name    text,
+    location geo_point
+);
+
+INSERT INTO stores (name, location) VALUES
+    ('Downtown',  ST_Point(-73.985, 40.748)),
+    ('Uptown',    ST_Point(-73.958, 40.800)),
+    ('Brooklyn',  ST_Point(-73.990, 40.680));
+
+-- Find stores within 5 km of Times Square
+SELECT s.name,
+       round(ST_DistanceSphere(ST_Point(-73.985, 40.758), s.location)::numeric / 1000, 2) AS km
+FROM   stores s
+ORDER  BY km;
+
+-- Point-in-polygon delivery zone check
+SELECT name
+FROM   stores
+WHERE  ST_Contains(
+    'POLYGON((-74.0 40.7,-73.9 40.7,-73.9 40.8,-74.0 40.8,-74.0 40.7))'::geo_polygon,
+    location
+);
+
+-- Bounding box overlap for coarse spatial filter
+SELECT name
+FROM   stores
+WHERE  ST_BoundingBox(
+    'POLYGON((-74.0 40.7,-73.9 40.7,-73.9 40.8,-74.0 40.8,-74.0 40.7))'::geo_polygon
+) && ST_MakeBox(
+    (location).x - 0.05, (location).y - 0.05,
+    (location).x + 0.05, (location).y + 0.05
+);</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-ontology">alohadb_ontology <span class="badge">v1.0</span></h2>
+
+<p>W3C-compatible RDF-style triple store (Subject-Predicate-Object) with type hierarchy and graph traversal. Implements a context graph for knowledge representation without proprietary algorithms.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_ontology;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ontology_assert(subject, predicate, object, confidence)</code></td><td>Add an S-P-O triple</td></tr>
+    <tr><td><code>ontology_retract(subject, predicate, object)</code></td><td>Remove a triple</td></tr>
+    <tr><td><code>ontology_query(subject, predicate, object)</code></td><td>Query triples; NULL = wildcard</td></tr>
+    <tr><td><code>ontology_related(entity, max_depth)</code></td><td>Graph traversal from an entity (recursive CTE)</td></tr>
+    <tr><td><code>ontology_ancestors(entity)</code></td><td>Type ancestors via subClassOf hierarchy</td></tr>
+    <tr><td><code>ontology_type_assert(entity, parent_type)</code></td><td>Register a type (NULL parent = root)</td></tr>
+    <tr><td><code>ontology_subclass(child, parent)</code></td><td>True if child is a subtype of parent</td></tr>
+    <tr><td><code>ontology_stats()</code></td><td>Triple store statistics</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Build a small product knowledge graph
+SELECT ontology_type_assert('Organization', NULL);
+SELECT ontology_type_assert('Company', 'Organization');
+
+SELECT ontology_assert('AlohaDB Inc.', 'rdf:type',   'Company',   1.0);
+SELECT ontology_assert('AlohaDB Inc.', 'makes',      'AlohaDB',   1.0);
+SELECT ontology_assert('AlohaDB',      'rdf:type',   'Software',  1.0);
+SELECT ontology_assert('AlohaDB',      'basedOn',    'PostgreSQL',1.0);
+
+-- Query: what does AlohaDB Inc. make?
+SELECT object AS product
+FROM   ontology_query('AlohaDB Inc.', 'makes', NULL);
+
+-- Traverse the graph 2 hops from AlohaDB Inc.
+SELECT related_entity, predicate, depth
+FROM   ontology_related('AlohaDB Inc.', 2)
+ORDER  BY depth, related_entity;
+
+-- Type hierarchy check
+SELECT ontology_subclass('Company', 'Organization') AS is_subtype;</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-context">alohadb_context <span class="badge">v1.0</span></h2>
+
+<p>Entity disambiguation for context-aware search. Maps ambiguous terms (e.g., "Apple") to canonical entities based on domain context, using a pure lookup-table approach with no patented NLP algorithms.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_context;
+-- Optionally extend the ontology graph:
+-- CREATE EXTENSION alohadb_ontology;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>context_register(term, canonical, domain, confidence)</code></td><td>Map a term to a canonical entity in a domain</td></tr>
+    <tr><td><code>context_alias(canonical, alias)</code></td><td>Register an alternate name for an entity</td></tr>
+    <tr><td><code>context_resolve(term, domain)</code></td><td>Return canonical entity for term in domain</td></tr>
+    <tr><td><code>context_disambiguate(terms text[])</code></td><td>Batch resolution (uses default domain per term)</td></tr>
+    <tr><td><code>context_rerank(results jsonb, entity_filter text)</code></td><td>Boost search results matching a canonical entity</td></tr>
+    <tr><td><code>context_retract(term, domain)</code></td><td>Remove a mapping</td></tr>
+    <tr><td><code>context_list()</code></td><td>List all context profiles</td></tr>
+    <tr><td><code>context_history(term)</code></td><td>Audit log for a term</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Register context profiles for "apple"
+SELECT context_register('apple', 'Apple Inc.',    'technology', 0.95);
+SELECT context_register('apple', 'Apple (fruit)', 'food',       0.90);
+SELECT context_alias('Apple Inc.', 'AAPL');
+
+-- Context-aware resolution
+SELECT context_resolve('apple', 'technology');  -- Apple Inc.
+SELECT context_resolve('apple', 'food');        -- Apple (fruit)
+SELECT context_resolve('AAPL',  'technology');  -- Apple Inc. (via alias)
+
+-- Integrate with full-text search
+SELECT ts_rank(to_tsvector(body), q) AS rank, title
+FROM   articles,
+       to_tsquery('apple') AS q,
+       context_resolve('apple', 'technology') AS entity
+WHERE  to_tsvector(body) @@ q
+ORDER  BY rank DESC;</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-intent">alohadb_intent <span class="badge">v1.0</span></h2>
+
+<p>Document intent classification using keyword-frequency scoring and a hierarchical intent registry. No machine learning model is required; classification is performed with a pure SQL keyword-hit-ratio algorithm.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_intent;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>intent_register(name, description, keywords[], parent)</code></td><td>Register an intent with keywords and optional parent</td></tr>
+    <tr><td><code>intent_tag(doc_id, content, intent_name)</code></td><td>Explicitly tag a document</td></tr>
+    <tr><td><code>intent_infer(content)</code></td><td>Score text against all intents; returns <code>(intent_name, score)</code></td></tr>
+    <tr><td><code>intent_auto_tag(doc_id, content)</code></td><td>Tag document using highest-scoring inferred intent</td></tr>
+    <tr><td><code>intent_of(doc_id)</code></td><td>Return all intents for a document</td></tr>
+    <tr><td><code>intent_find(intent_name)</code></td><td>Return all documents tagged with an intent</td></tr>
+    <tr><td><code>intent_ancestors(intent_name)</code></td><td>Return ancestor intents via hierarchy</td></tr>
+    <tr><td><code>intent_stats()</code></td><td>Registry statistics</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Define intent hierarchy
+SELECT intent_register('support',  'Customer support', ARRAY['help','issue','problem'], NULL);
+SELECT intent_register('purchase', 'Purchase intent',  ARRAY['buy','price','order','cart'], 'support');
+SELECT intent_register('complaint','Complaint',        ARRAY['broken','wrong','refund','bad'], 'support');
+
+-- Classify incoming text
+SELECT intent_name, round(score::numeric, 3)
+FROM   intent_infer('I want to buy the blue widget, what is the price?')
+WHERE  score > 0.1
+ORDER  BY score DESC;
+
+-- Auto-tag and retrieve
+SELECT intent_auto_tag(42, 'My order arrived damaged, I need a refund');
+SELECT intent_name FROM intent_of(42);</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-python">alohadb_python <span class="badge">v1.0</span></h2>
+
+<p>Execute Python code directly inside PostgreSQL using the built-in <code>plpython3u</code> procedural language. Supports inline evaluation, versioned script management, argument passing via JSON, and execution history.</p>
+
+<h3>Prerequisite</h3>
+<pre><code>-- PostgreSQL must be compiled with PL/Python3 support.
+-- Verify:
+SELECT lanname FROM pg_language WHERE lanname = 'plpython3u';</code></pre>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_python;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>python_eval(code text, args_json text DEFAULT NULL)</code></td><td>Execute Python inline; set <code>_result</code> for return value</td></tr>
+    <tr><td><code>python_register(script_name, code)</code></td><td>Store a versioned Python script</td></tr>
+    <tr><td><code>python_exec(script_name, args_json)</code></td><td>Execute a registered script</td></tr>
+    <tr><td><code>python_list()</code></td><td>List all registered scripts</td></tr>
+    <tr><td><code>python_get(script_name)</code></td><td>Retrieve a script's latest version code</td></tr>
+    <tr><td><code>python_history(script_name)</code></td><td>Execution history for a script</td></tr>
+    <tr><td><code>python_stats()</code></td><td>Script and execution statistics</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Inline evaluation
+SELECT python_eval('_result = str(sum(range(101)))') AS sum_1_to_100;
+-- Returns: '5050'
+
+-- Pass arguments as JSON
+SELECT python_eval(
+    '_args = __import__("json").loads(_args);
+     _result = _args["first"] + " " + _args["last"]',
+    '{"first": "Aloha", "last": "DB"}'
+) AS full_name;
+
+-- Register a reusable script
+SELECT python_register('calc_discount', $py$
+import json
+args  = json.loads(_args)
+price = float(args.get('price', 0))
+rate  = float(args.get('rate',  0.10))
+_result = str(round(price * (1 - rate), 2))
+$py$);
+
+-- Execute it
+SELECT python_exec('calc_discount', '{"price": 250.00, "rate": 0.15}');
+-- Returns: '212.5'</code></pre>
+
+<div class="warning">
+  <strong>Warning</strong>
+  <code>plpython3u</code> is an untrusted language. It can access the file system and network. Grant execution rights only to trusted users. Use PostgreSQL roles and <code>SECURITY DEFINER</code> functions to limit exposure.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="ext-unified">alohadb_unified <span class="badge">v1.0</span></h2>
+
+<p>Unified streaming and batch semantics. Streaming events land in an in-database buffer and are exposed through a dynamic <code>UNION ALL</code> view that combines the batch table with unflushed events. No Spark, Delta Lake, or Databricks-specific code.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_unified;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>unified_register(source, table, schema, view_name)</code></td><td>Create unified source and its UNION ALL view</td></tr>
+    <tr><td><code>unified_ingest(source, event_data jsonb)</code></td><td>Buffer a streaming event</td></tr>
+    <tr><td><code>unified_flush(source)</code></td><td>Promote buffered events into the batch table</td></tr>
+    <tr><td><code>unified_stream_events(source)</code></td><td>Return unflushed buffer events</td></tr>
+    <tr><td><code>unified_purge(source)</code></td><td>Discard unflushed buffer events</td></tr>
+    <tr><td><code>unified_drop(source)</code></td><td>Remove unified source and its view</td></tr>
+    <tr><td><code>unified_list()</code></td><td>List all unified sources</td></tr>
+    <tr><td><code>unified_stats(source)</code></td><td>Ingest and flush statistics</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Batch table
+CREATE TABLE events (
+    id        bigserial PRIMARY KEY,
+    user_id   int,
+    action    text,
+    ts        timestamptz DEFAULT now()
+);
+
+-- Register unified source
+SELECT unified_register('event_stream', 'events', 'public', 'events_all');
+
+-- Stream events arrive (e.g., from application, Kafka flush, or webhook)
+SELECT unified_ingest('event_stream',
+    '{"user_id": 1, "action": "login",  "ts": "2025-01-01T10:00:00Z"}'::jsonb);
+SELECT unified_ingest('event_stream',
+    '{"user_id": 2, "action": "purchase","ts": "2025-01-01T10:01:00Z"}'::jsonb);
+
+-- Query unified view (batch + stream with no latency gap)
+SELECT user_id, action, ts FROM events_all ORDER BY ts;
+
+-- Flush to batch table (run periodically or trigger-based)
+SELECT unified_flush('event_stream');</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-pipeline">alohadb_pipeline <span class="badge">v1.0</span></h2>
+
+<p>DAG-based ETL pipeline orchestration. Tasks are defined with SQL commands and dependency relationships. A background worker applies Kahn's topological sort (1962) to dispatch ready tasks up to a configurable parallelism limit.</p>
+
+<h3>Prerequisite</h3>
+<pre><code>-- Add to postgresql.conf, then restart:
+shared_preload_libraries = 'alohadb_pipeline'</code></pre>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_pipeline;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>pipeline_create(name, description)</code></td><td>Define a named pipeline</td></tr>
+    <tr><td><code>pipeline_task_add(pipeline, task_name, command, step_order)</code></td><td>Add a SQL task to a pipeline</td></tr>
+    <tr><td><code>pipeline_task_depend(pipeline, task, depends_on)</code></td><td>Declare a dependency edge</td></tr>
+    <tr><td><code>pipeline_run(pipeline_name)</code></td><td>Start a pipeline run; returns run_id</td></tr>
+    <tr><td><code>pipeline_cancel(run_id)</code></td><td>Cancel a running pipeline</td></tr>
+    <tr><td><code>pipeline_status(pipeline_name)</code></td><td>Status summary for the most recent run</td></tr>
+    <tr><td><code>pipeline_list()</code></td><td>List all pipelines</td></tr>
+    <tr><td><code>pipeline_history(pipeline_name, limit)</code></td><td>Past run history</td></tr>
+    <tr><td><code>pipeline_advance_ready(run_id)</code></td><td>Internal: promote waiting tasks with all deps met</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Define a three-stage ETL pipeline
+SELECT pipeline_create('daily_etl', 'Daily data processing');
+
+SELECT pipeline_task_add('daily_etl', 'extract',
+    'INSERT INTO stage_raw SELECT * FROM source_system WHERE date = current_date',
+    1);
+
+SELECT pipeline_task_add('daily_etl', 'transform',
+    'INSERT INTO stage_clean SELECT clean_row(r) FROM stage_raw r',
+    2);
+
+SELECT pipeline_task_add('daily_etl', 'load',
+    'INSERT INTO warehouse SELECT * FROM stage_clean',
+    3);
+
+SELECT pipeline_task_depend('daily_etl', 'transform', 'extract');
+SELECT pipeline_task_depend('daily_etl', 'load',      'transform');
+
+-- Start a run
+SELECT pipeline_run('daily_etl') AS run_id;
+
+-- Monitor
+SELECT pipeline_name, status, completed_tasks, total_tasks
+FROM   pipeline_status('daily_etl');</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-kafka">alohadb_kafka <span class="badge">v1.0</span></h2>
+
+<p>Inbound Kafka and AWS Kinesis consumer. A background worker polls configured consumers and writes received messages to <code>alohadb_kafka_messages</code>. Kafka transport uses librdkafka (Apache 2.0). Kinesis uses AWS HTTP API with SigV4 signing (HMAC-SHA256, RFC 2104).</p>
+
+<h3>Prerequisite</h3>
+<pre><code>-- Add to postgresql.conf, then restart:
+shared_preload_libraries = 'alohadb_kafka'
+
+-- For Kafka (optional; Kinesis uses HTTP only):
+-- Install librdkafka >= 1.8</code></pre>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_kafka;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>kafka_consumer_create(name, type, brokers, topic, group_id)</code></td><td>Register a Kafka consumer</td></tr>
+    <tr><td><code>kinesis_stream_create(name, region, stream_name, config jsonb)</code></td><td>Register a Kinesis consumer</td></tr>
+    <tr><td><code>kafka_consumer_start(name)</code></td><td>Enable polling for a consumer</td></tr>
+    <tr><td><code>kafka_consumer_stop(name)</code></td><td>Pause polling</td></tr>
+    <tr><td><code>kafka_consumer_status()</code></td><td>Status of all consumers</td></tr>
+    <tr><td><code>kafka_messages_poll(consumer_name, limit)</code></td><td>Fetch and mark unprocessed messages</td></tr>
+    <tr><td><code>kafka_messages_purge(consumer_name)</code></td><td>Delete processed messages</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Register a Kafka consumer
+SELECT kafka_consumer_create(
+    'orders_consumer',
+    'kafka',
+    'kafka1:9092,kafka2:9092',
+    'orders',
+    'orders_pg_group'
+);
+
+-- Start polling (background worker picks this up)
+SELECT kafka_consumer_start('orders_consumer');
+
+-- Process messages in application code
+SELECT msg_id,
+       convert_from(payload, 'UTF8')::jsonb AS message
+FROM   kafka_messages_poll('orders_consumer', 100);
+
+-- Purge processed messages older than 7 days
+SELECT kafka_messages_purge('orders_consumer');
+
+-- Register a Kinesis stream
+SELECT kinesis_stream_create(
+    'clickstream',
+    'us-east-1',
+    'prod-click-events',
+    '{"aws_access_key_id":"AKIAxxx","aws_secret_access_key":"secret"}'::jsonb
+);</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-objectstore">alohadb_objectstore <span class="badge">v1.0</span></h2>
+
+<p>Read and write S3, GCS, and Azure Blob storage directly from SQL. S3 uses SigV4 signing (HMAC-SHA256, RFC 2104, publicly documented AWS algorithm). GCS uses OAuth2 service-account JWT exchange (RFC 6749). Azure uses Shared Access Signature. No proprietary cloud SDK code.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_objectstore;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>objectstore_credential_register(provider, label, config jsonb)</code></td><td>Store credentials for s3 / gcs / azure</td></tr>
+    <tr><td><code>objectstore_credential_list()</code></td><td>List labels (config values not returned)</td></tr>
+    <tr><td><code>objectstore_get(uri, label)</code></td><td>Download object as bytea</td></tr>
+    <tr><td><code>objectstore_get_text(uri, label)</code></td><td>Download object as text</td></tr>
+    <tr><td><code>objectstore_put(uri, data, label)</code></td><td>Upload bytea to object store</td></tr>
+    <tr><td><code>objectstore_list(prefix, label, max_keys)</code></td><td>List objects under a prefix</td></tr>
+    <tr><td><code>objectstore_delete(uri, label)</code></td><td>Delete an object</td></tr>
+    <tr><td><code>objectstore_read_csv(uri, label, delimiter, has_header)</code></td><td>Read CSV from object store as SETOF jsonb</td></tr>
+  </tbody>
+</table>
+
+<h3>URI Formats</h3>
+<table>
+  <thead><tr><th>Provider</th><th>URI Format</th></tr></thead>
+  <tbody>
+    <tr><td>S3</td><td><code>s3://bucket-name/path/to/object</code></td></tr>
+    <tr><td>GCS</td><td><code>gcs://bucket-name/path/to/object</code></td></tr>
+    <tr><td>Azure</td><td><code>azure://account/container/blob/path</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Register S3 credentials
+SELECT objectstore_credential_register('s3', 'prod-s3', '{
+    "bucket": "my-data-lake",
+    "region": "us-east-1",
+    "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+    "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+}'::jsonb);
+
+-- Download a file
+SELECT objectstore_get_text('s3://my-data-lake/reports/summary.txt', 'prod-s3');
+
+-- Read CSV from S3 directly into a table
+INSERT INTO sales_staging
+SELECT
+    (row->>'order_id')::bigint,
+    (row->>'amount')::numeric,
+    (row->>'sale_date')::date
+FROM objectstore_read_csv('s3://my-data-lake/data/sales_2025.csv', 'prod-s3');
+
+-- Upload a query result as CSV
+SELECT objectstore_put(
+    's3://my-data-lake/exports/daily_summary.csv',
+    convert_to(
+        (SELECT string_agg(row_to_json(t)::text, E'\n') FROM daily_summary t),
+        'UTF8'
+    ),
+    'prod-s3'
+);
+
+-- List objects
+SELECT key, pg_size_pretty(size_bytes)
+FROM   objectstore_list('s3://my-data-lake/data/', 'prod-s3', 100)
+ORDER  BY key;</code></pre>
+
+<div class="warning">
+  <strong>Warning</strong>
+  Credentials are stored in the <code>alohadb_objectstore_credentials</code> table. Protect this table with row-level security or restrict access to a dedicated role. Consider enabling the <code>alohadb_vault</code> extension for encrypted credential storage.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="ext-model-registry">alohadb_model_registry <span class="badge">v1.0</span></h2>
+
+<p>ML model versioning, deployment lifecycle management, and experiment tracking. Integrates with <code>alohadb_inference</code> (when installed) to automatically load models on promotion to production.</p>
+
+<h3>Install</h3>
+<pre><code>CREATE EXTENSION alohadb_model_registry;</code></pre>
+
+<h3>Key Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>model_register(name, framework, description, tags jsonb)</code></td><td>Register or update a model entry</td></tr>
+    <tr><td><code>model_version_add(name, model_data bytea, metrics, params, ...)</code></td><td>Add a new model version (staged by default)</td></tr>
+    <tr><td><code>model_deploy(name, version)</code></td><td>Promote to production; archives current production version</td></tr>
+    <tr><td><code>model_rollback(name)</code></td><td>Restore the most recently archived version</td></tr>
+    <tr><td><code>model_get_active(name)</code></td><td>Return metadata for the production version</td></tr>
+    <tr><td><code>model_list()</code></td><td>List all models with active version and count</td></tr>
+    <tr><td><code>model_version_list(name)</code></td><td>All versions with stage and metrics</td></tr>
+    <tr><td><code>model_compare(name, ver_a, ver_b)</code></td><td>Metric delta between two versions</td></tr>
+    <tr><td><code>experiment_start(model, run_name, params)</code></td><td>Start a training experiment run</td></tr>
+    <tr><td><code>experiment_end(exp_id, metrics, status)</code></td><td>Record experiment results</td></tr>
+    <tr><td><code>experiment_list(model)</code></td><td>List all experiment runs for a model</td></tr>
+  </tbody>
+</table>
+
+<h3>Examples</h3>
+
+<pre><code>-- Register a model
+SELECT model_register(
+    'churn_predictor', 'onnx',
+    'Customer churn prediction model',
+    '{"team": "data-science", "project": "retention"}'::jsonb
+);
+
+-- Add version 1
+SELECT model_version_add(
+    'churn_predictor',
+    pg_read_binary_file('/models/churn_v1.onnx'),  -- ONNX bytes
+    '{"auc": 0.82, "accuracy": 0.79}'::jsonb,
+    '{"lr": 0.001, "depth": 6}'::jsonb
+);
+
+-- Add version 2 (better metrics)
+SELECT model_version_add(
+    'churn_predictor',
+    pg_read_binary_file('/models/churn_v2.onnx'),
+    '{"auc": 0.88, "accuracy": 0.85}'::jsonb,
+    '{"lr": 0.0005, "depth": 8}'::jsonb
+);
+
+-- Deploy version 2
+SELECT model_deploy('churn_predictor', 2);
+
+-- Compare versions
+SELECT metric, round(value_a::numeric, 3) AS v1,
+               round(value_b::numeric, 3) AS v2,
+               round(delta::numeric, 3)   AS improvement
+FROM model_compare('churn_predictor', 1, 2);
+
+-- Track an experiment
+DO $$
+DECLARE v_exp bigint;
+BEGIN
+    SELECT experiment_start('churn_predictor', 'hyperparam_sweep_001',
+        '{"lr": 0.001, "depth": 10}'::jsonb) INTO v_exp;
+    -- ... training happens externally ...
+    PERFORM experiment_end(v_exp, '{"auc": 0.91}'::jsonb, 'finished');
+END $$;</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="ext-other">Other Built-in AlohaDB Extensions</h2>
+
+<p>The following extensions ship with AlohaDB 20.0 and are documented in detail at <a href="https://www.OpenCan.ai">https://www.OpenCan.ai</a>:</p>
+
+<table>
+  <thead><tr><th>Extension</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>alohadb_analytics</code></td><td>Window functions, statistical aggregates, and analytical queries</td></tr>
+    <tr><td><code>alohadb_approx</code></td><td>Approximate aggregates: HyperLogLog, Count-Min Sketch, t-digest</td></tr>
+    <tr><td><code>alohadb_audit</code></td><td>Row-level audit logging with change capture</td></tr>
+    <tr><td><code>alohadb_branch</code></td><td>Logical database branching (copy-on-write snapshots)</td></tr>
+    <tr><td><code>alohadb_cache</code></td><td>Shared-memory result cache with TTL</td></tr>
+    <tr><td><code>alohadb_cdc_arrow</code></td><td>Change data capture with Apache Arrow IPC streaming</td></tr>
+    <tr><td><code>alohadb_chart</code></td><td>SVG chart generation from SQL result sets</td></tr>
+    <tr><td><code>alohadb_columnar</code></td><td>Column-oriented storage via custom access method</td></tr>
+    <tr><td><code>alohadb_cron</code></td><td>Background cron job scheduler with standard cron syntax</td></tr>
+    <tr><td><code>alohadb_distributed</code></td><td>Horizontal sharding and distributed query execution</td></tr>
+    <tr><td><code>alohadb_federated</code></td><td>Query external databases (MySQL, SQLite, REST APIs) via FDW</td></tr>
+    <tr><td><code>alohadb_gpu</code></td><td>GPU-accelerated aggregates via CUDA/ROCm</td></tr>
+    <tr><td><code>alohadb_graphql</code></td><td>Auto-generate a GraphQL API from table schemas</td></tr>
+    <tr><td><code>alohadb_http</code></td><td>Make outbound HTTP/HTTPS requests from SQL</td></tr>
+    <tr><td><code>alohadb_inference</code></td><td>Run ONNX models in-database via onnxruntime</td></tr>
+    <tr><td><code>alohadb_jsonschema</code></td><td>JSON Schema validation as a CHECK constraint</td></tr>
+    <tr><td><code>alohadb_learned_stats</code></td><td>Learned cardinality estimator for query planning</td></tr>
+    <tr><td><code>alohadb_nl2sql</code></td><td>Natural-language to SQL translation using LLM integration</td></tr>
+    <tr><td><code>alohadb_nosql</code></td><td>Document-store API over PostgreSQL JSONB tables</td></tr>
+    <tr><td><code>alohadb_pool</code></td><td>Built-in connection pooler (PgBouncer-compatible)</td></tr>
+    <tr><td><code>alohadb_query_store</code></td><td>Query performance history and plan capture</td></tr>
+    <tr><td><code>alohadb_queue</code></td><td>Durable transactional job queue</td></tr>
+    <tr><td><code>alohadb_ratelimit</code></td><td>Per-role rate limiting on query throughput</td></tr>
+    <tr><td><code>alohadb_realtime</code></td><td>WebSocket-based live query subscriptions</td></tr>
+    <tr><td><code>alohadb_remote_config</code></td><td>Dynamic configuration management via SQL tables</td></tr>
+    <tr><td><code>alohadb_restapi</code></td><td>Auto-generated REST API over tables (PostgREST-compatible)</td></tr>
+    <tr><td><code>alohadb_scale</code></td><td>Read replica management and automatic query routing</td></tr>
+    <tr><td><code>alohadb_schema_change</code></td><td>Online schema migrations with zero downtime</td></tr>
+    <tr><td><code>alohadb_search</code></td><td>Full-text search with BM25 ranking and multi-language support</td></tr>
+    <tr><td><code>alohadb_temporal</code></td><td>Bitemporal tables (valid time + transaction time)</td></tr>
+    <tr><td><code>alohadb_timeseries</code></td><td>Time-series compression, downsampling, and gap filling</td></tr>
+    <tr><td><code>alohadb_tiering</code></td><td>Automatic data tiering (hot/warm/cold) based on access frequency</td></tr>
+    <tr><td><code>alohadb_vault</code></td><td>Encrypted secrets storage integrated with extension credentials</td></tr>
+    <tr><td><code>alohadb_vectorize</code></td><td>Automatic embedding generation using pluggable model providers</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<hr>
+<h2 id="pg-builtins">PostgreSQL Built-in Functions and Features</h2>
+
+<p>AlohaDB is fully compatible with PostgreSQL 18. The following built-in capabilities are frequently used alongside AlohaDB extensions.</p>
+
+<h3>JSON and JSONB</h3>
+<table>
+  <thead><tr><th>Function / Operator</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>row::jsonb</code>, <code>to_jsonb(v)</code></td><td>Convert row or value to jsonb</td></tr>
+    <tr><td><code>jsonb-&gt;&gt;'key'</code></td><td>Extract text value by key</td></tr>
+    <tr><td><code>jsonb-&gt;'key'</code></td><td>Extract jsonb value by key</td></tr>
+    <tr><td><code>jsonb_populate_record(null::T, jsonb)</code></td><td>Cast jsonb to a typed record (used by alohadb_unified)</td></tr>
+    <tr><td><code>jsonb_object_keys(jsonb)</code></td><td>Return all top-level keys</td></tr>
+    <tr><td><code>jsonb_agg(expr)</code></td><td>Aggregate rows into a JSON array</td></tr>
+    <tr><td><code>jsonb_build_object(k,v,...)</code></td><td>Construct a jsonb object from key-value pairs</td></tr>
+    <tr><td><code>jsonb_strip_nulls(jsonb)</code></td><td>Remove null-valued keys</td></tr>
+  </tbody>
+</table>
+
+<h3>Full-Text Search</h3>
+<table>
+  <thead><tr><th>Function / Operator</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>to_tsvector(config, text)</code></td><td>Parse text into a tsvector</td></tr>
+    <tr><td><code>to_tsquery(config, text)</code></td><td>Parse query string</td></tr>
+    <tr><td><code>tsvector @@ tsquery</code></td><td>Full-text match operator</td></tr>
+    <tr><td><code>ts_rank(tsvector, tsquery)</code></td><td>Relevance score</td></tr>
+    <tr><td><code>ts_headline(config, text, tsquery)</code></td><td>Highlighted excerpt</td></tr>
+  </tbody>
+</table>
+
+<h3>Window Functions</h3>
+<pre><code>SELECT user_id,
+       amount,
+       row_number()     OVER w AS row_num,
+       rank()           OVER w AS rnk,
+       sum(amount)      OVER w AS running_total,
+       lag(amount, 1)   OVER w AS prev_amount
+FROM   orders
+WINDOW w AS (PARTITION BY user_id ORDER BY ts);</code></pre>
+
+<h3>CTEs and Recursive Queries</h3>
+<pre><code>-- Recursive hierarchy traversal (used internally by alohadb_ontology)
+WITH RECURSIVE hierarchy AS (
+    SELECT id, name, parent_id, 0 AS depth
+    FROM   categories WHERE parent_id IS NULL
+  UNION ALL
+    SELECT c.id, c.name, c.parent_id, h.depth + 1
+    FROM   categories c
+    JOIN   hierarchy h ON h.id = c.parent_id
+)
+SELECT id, name, depth FROM hierarchy ORDER BY depth, name;</code></pre>
+
+<h3>Aggregate Functions</h3>
+<table>
+  <thead><tr><th>Function</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>count(*)</code>, <code>sum(x)</code>, <code>avg(x)</code></td><td>Standard aggregates</td></tr>
+    <tr><td><code>percentile_cont(0.5) WITHIN GROUP (ORDER BY x)</code></td><td>Median</td></tr>
+    <tr><td><code>array_agg(x ORDER BY y)</code></td><td>Ordered array aggregate</td></tr>
+    <tr><td><code>string_agg(x, sep)</code></td><td>String concatenation aggregate</td></tr>
+    <tr><td><code>mode() WITHIN GROUP (ORDER BY x)</code></td><td>Most frequent value</td></tr>
+    <tr><td><code>corr(y, x)</code></td><td>Pearson correlation coefficient</td></tr>
+  </tbody>
+</table>
+
+<h3>System Administration</h3>
+<pre><code>-- Active connections
+SELECT pid, usename, state, query_start, left(query, 60) AS query
+FROM   pg_stat_activity
+WHERE  state != 'idle'
+ORDER  BY query_start;
+
+-- Table sizes
+SELECT tablename,
+       pg_size_pretty(pg_total_relation_size(tablename::regclass)) AS total
+FROM   pg_tables
+WHERE  schemaname = 'public'
+ORDER  BY pg_total_relation_size(tablename::regclass) DESC;
+
+-- Slow query log
+SELECT calls, round(mean_exec_time::numeric, 2) AS avg_ms,
+       left(query, 80) AS query
+FROM   pg_stat_statements
+ORDER  BY mean_exec_time DESC LIMIT 10;
+
+-- Terminate idle connections
+SELECT pg_terminate_backend(pid)
+FROM   pg_stat_activity
+WHERE  state = 'idle'
+  AND  query_start < now() - interval '30 minutes';</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="guc">Configuration Reference (GUC)</h2>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Default</th><th>Context</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>alohadb.cron_check_interval</code></td><td>60</td><td>SIGHUP</td><td>Seconds between cron job scans</td></tr>
+    <tr><td><code>alohadb.cron_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the cron worker connects to</td></tr>
+    <tr><td><code>alohadb.pipeline_check_interval</code></td><td>5</td><td>SIGHUP</td><td>Seconds between pipeline task polls</td></tr>
+    <tr><td><code>alohadb.pipeline_max_parallel</code></td><td>4</td><td>SIGHUP</td><td>Maximum concurrent pipeline tasks</td></tr>
+    <tr><td><code>alohadb.pipeline_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the pipeline worker connects to</td></tr>
+    <tr><td><code>alohadb.kafka_poll_interval_ms</code></td><td>1000</td><td>SIGHUP</td><td>Milliseconds between Kafka consumer polls</td></tr>
+    <tr><td><code>alohadb.kafka_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the Kafka worker connects to</td></tr>
+    <tr><td><code>alohadb.parquet_allowed_paths</code></td><td>(empty)</td><td>SIGHUP</td><td>Comma-separated list of directories allowed for file reads</td></tr>
+    <tr><td><code>alohadb.python_executable</code></td><td>python3</td><td>SIGHUP</td><td>Python interpreter path (informational; plpython3u uses the compiled-in path)</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<hr>
+<h2 id="testing">Testing</h2>
+
+<h3>Regression Test Suite</h3>
+
+<p>AlohaDB ships SQL regression tests for all new extensions under each extension's <code>sql/</code> directory. Tests follow the standard PostgreSQL <code>pg_regress</code> format: a <code>.sql</code> input file is executed and its output compared against the corresponding <code>expected/*.out</code> file.</p>
+
+<h4>Running Tests (Meson build)</h4>
+
+<pre><code>## From the build directory:
+cd alohadb-20.0/build
+
+## Run all regression tests
+meson test --suite regress
+
+## Run tests for a specific extension
+meson test --suite regress alohadb_vector
+meson test --suite regress alohadb_geo
+
+## Run with verbose output
+meson test -v --suite regress alohadb_pipeline
+
+## Run a single test file manually
+pg_regress --inputdir=../contrib/alohadb_vector \
+           --expecteddir=../contrib/alohadb_vector/expected \
+           vector</code></pre>
+
+<h4>Running Tests (make / pgxs)</h4>
+
+<pre><code>cd contrib/alohadb_vector
+make installcheck PGPORT=5432 PGUSER=postgres</code></pre>
+
+<h4>Test File Locations</h4>
+
+<table>
+  <thead><tr><th>Extension</th><th>Test File</th></tr></thead>
+  <tbody>
+    <tr><td>alohadb_vector</td><td><code>contrib/alohadb_vector/sql/vector.sql</code></td></tr>
+    <tr><td>alohadb_geo</td><td><code>contrib/alohadb_geo/sql/geo.sql</code></td></tr>
+    <tr><td>alohadb_pipeline</td><td><code>contrib/alohadb_pipeline/sql/pipeline.sql</code></td></tr>
+    <tr><td>alohadb_kafka</td><td><code>contrib/alohadb_kafka/sql/kafka.sql</code></td></tr>
+    <tr><td>alohadb_objectstore</td><td><code>contrib/alohadb_objectstore/sql/objectstore.sql</code></td></tr>
+    <tr><td>alohadb_model_registry</td><td><code>contrib/alohadb_model_registry/sql/model_registry.sql</code></td></tr>
+    <tr><td>alohadb_ontology</td><td><code>contrib/alohadb_ontology/sql/ontology.sql</code></td></tr>
+    <tr><td>alohadb_context</td><td><code>contrib/alohadb_context/sql/context.sql</code></td></tr>
+    <tr><td>alohadb_intent</td><td><code>contrib/alohadb_intent/sql/intent.sql</code></td></tr>
+    <tr><td>alohadb_python</td><td><code>contrib/alohadb_python/sql/python.sql</code></td></tr>
+    <tr><td>alohadb_unified</td><td><code>contrib/alohadb_unified/sql/unified.sql</code></td></tr>
+    <tr><td>alohadb_parquet</td><td><code>contrib/alohadb_parquet/sql/parquet_v11.sql</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Integration Tests</h3>
+
+<p>Integration tests that require live external services (S3 buckets, Kafka brokers, Kinesis streams) are not included in the regression suite. Run them separately with a configured test environment:</p>
+
+<pre><code>## Set environment variables for live testing
+export ALOHADB_TEST_S3_BUCKET=my-test-bucket
+export ALOHADB_TEST_S3_REGION=us-east-1
+export ALOHADB_TEST_S3_ACCESS_KEY=AKIAxxx
+export ALOHADB_TEST_S3_SECRET_KEY=yyy
+
+export ALOHADB_TEST_KAFKA_BROKERS=localhost:9092
+export ALOHADB_TEST_KAFKA_TOPIC=test_topic
+
+## Run integration tests
+psql -U postgres -f test/integration/objectstore_live.sql
+psql -U postgres -f test/integration/kafka_live.sql</code></pre>
+
+<h3>End-to-End Smoke Test</h3>
+
+<p>After installation, run this quick smoke test to confirm the core extensions are working:</p>
+
+<pre><code>-- Connect to your database
+psql -U postgres -d mydb
+
+-- Create extensions
+CREATE EXTENSION IF NOT EXISTS alohadb_vector;
+CREATE EXTENSION IF NOT EXISTS alohadb_geo;
+CREATE EXTENSION IF NOT EXISTS alohadb_parquet;
+
+-- Vector test
+SELECT '[1,0,0]'::vector <-> '[0,1,0]'::vector AS l2_dist;
+-- Expected: 1.4142135623...
+
+-- Geo test
+SELECT round(ST_Distance('0,0'::geo_point, '3,4'::geo_point)::numeric, 2);
+-- Expected: 5.00
+
+-- Parquet function exists
+SELECT proname FROM pg_proc WHERE proname = 'read_parquet';
+-- Expected: 1 row
+
+\echo "Smoke test passed"</code></pre>
+
+<h3>Performance Benchmarks</h3>
+
+<pre><code>-- Benchmark IVFFlat ANN search
+-- 1. Create 100k random 128-dim vectors
+CREATE TABLE bench_vecs AS
+SELECT i::text AS id,
+       (SELECT array_agg(random()::float4)::text
+        FROM generate_series(1,128)) || ']'
+FROM generate_series(1, 100000) i;
+
+-- 2. Convert to vector type (requires text manipulation; simplified here)
+-- 3. Build and train index
+SELECT vector_index_create('bench_idx','bench_vecs','emb','id',100,10,'l2');
+SELECT vector_index_rebuild('bench_idx');
+
+-- 4. Time a search
+\timing on
+SELECT entry_id, distance
+FROM   vector_index_search('bench_idx', '[0.1,0.2,...]'::vector, 10);
+\timing off</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="troubleshooting">Troubleshooting</h2>
+
+<h3>Extension Does Not Load</h3>
+
+<p><strong>Symptom:</strong> <code>ERROR: could not open extension control file ".../alohadb_vector.control": No such file or directory</code></p>
+
+<p><strong>Cause:</strong> The extension files were not installed to the PostgreSQL data directory.</p>
+
+<p><strong>Fix:</strong></p>
+<pre><code>## Verify PostgreSQL extension directory
+pg_config --sharedir
+ls "$(pg_config --sharedir)/extension/" | grep alohadb
+
+## If missing, reinstall:
+cd alohadb-20.0/build
+sudo ninja install
+
+## On Windows: re-run the installer or manually copy
+## C:\Program Files\AlohaDB\20\share\extension\alohadb_vector.*
+## to the PostgreSQL share\extension directory</code></pre>
+
+<h3>Shared Library Not Found</h3>
+
+<p><strong>Symptom:</strong> <code>ERROR: could not load library ".../alohadb_vector.so": libm.so.6: cannot open shared object file</code></p>
+
+<p><strong>Fix:</strong></p>
+<pre><code>## Linux: update library cache
+sudo ldconfig
+
+## macOS: set DYLD_LIBRARY_PATH if needed
+export DYLD_LIBRARY_PATH=/usr/local/lib:$DYLD_LIBRARY_PATH
+
+## Windows: ensure the DLL directory is on PATH
+set PATH=C:\Program Files\AlohaDB\20\lib;%PATH%</code></pre>
+
+<h3>Background Worker Does Not Start</h3>
+
+<p><strong>Symptom:</strong> Pipeline tasks never advance. Kafka messages are not consumed. Cron jobs do not run.</p>
+
+<p><strong>Cause:</strong> The extension is not listed in <code>shared_preload_libraries</code>.</p>
+
+<p><strong>Fix:</strong></p>
+<pre><code>## Check postgresql.conf
+grep shared_preload_libraries "$PGDATA/postgresql.conf"
+
+## Should include the extension, e.g.:
+## shared_preload_libraries = 'alohadb_pipeline,alohadb_kafka,alohadb_cron'
+
+## After editing, restart the server (SIGHUP is NOT sufficient for this setting)
+## Linux:
+sudo systemctl restart alohadb
+
+## Windows:
+net stop alohadb-20 && net start alohadb-20
+
+## macOS:
+brew services restart alohadb</code></pre>
+
+<div class="note">
+  <strong>Note</strong>
+  Changes to <code>shared_preload_libraries</code> require a full server restart. A <code>pg_reload_conf()</code> call or <code>SIGHUP</code> signal is not sufficient.
+</div>
+
+<h3>PL/Python3 Extension Fails to Load</h3>
+
+<p><strong>Symptom:</strong> <code>ERROR: could not load library ".../plpython3.so": libpython3.11.so: cannot open shared object file</code></p>
+
+<p><strong>Fix (Linux):</strong></p>
+<pre><code>## Check which Python version PostgreSQL was compiled against
+pg_config --configure | grep python
+
+## Install matching Python development libraries
+sudo apt install python3.11-dev     # Ubuntu/Debian
+sudo dnf install python3.11-devel   # RHEL/Rocky
+
+## Ensure the shared library is available
+sudo ldconfig
+find /usr -name "libpython3*.so*" 2>/dev/null</code></pre>
+
+<p><strong>Fix (Windows):</strong></p>
+<pre><code>## Download Python 3.11 from python.org
+## Check "Add Python to PATH" during install
+## Verify:
+python --version
+where python3.dll</code></pre>
+
+<h3>alohadb_vector: Index Not Trained</h3>
+
+<p><strong>Symptom:</strong> <code>ERROR: vector_index_insert: index "my_idx" not found or not trained</code></p>
+
+<p><strong>Fix:</strong></p>
+<pre><code>-- Check training status
+SELECT index_name, trained, vector_count
+FROM   vector_index_stats('my_idx');
+
+-- If trained = false, run:
+SELECT vector_index_rebuild('my_idx');
+
+-- If the source table is empty, populate it first:
+SELECT count(*) FROM my_source_table WHERE my_vector_col IS NOT NULL;</code></pre>
+
+<h3>alohadb_parquet: Path Not Allowed</h3>
+
+<p><strong>Symptom:</strong> <code>ERROR: file path "/data/file.parquet" is not in an allowed directory</code></p>
+
+<p><strong>Fix:</strong></p>
+<pre><code>-- Set the allowed paths (can be done per-session or in postgresql.conf)
+SET alohadb.parquet_allowed_paths = '/data,/tmp';
+
+-- Or as superuser for all sessions:
+ALTER SYSTEM SET alohadb.parquet_allowed_paths = '/data,/tmp';
+SELECT pg_reload_conf();</code></pre>
+
+<h3>alohadb_objectstore: Authentication Failure</h3>
+
+<p><strong>Symptom:</strong> <code>WARNING: objectstore_s3: HTTP 403 for s3://bucket/key</code>, <code>objectstore_get returns NULL</code></p>
+
+<p><strong>Possible causes and fixes:</strong></p>
+<ul>
+  <li><strong>Wrong credentials:</strong> Re-register with the correct access key and secret.</li>
+  <li><strong>Wrong region:</strong> Ensure the <code>"region"</code> field in the config matches the bucket's region.</li>
+  <li><strong>Clock skew:</strong> SigV4 requires server time to be within 5 minutes of AWS time. Check <code>SELECT now()</code> and compare to an NTP source.</li>
+  <li><strong>IAM permissions:</strong> The access key must have <code>s3:GetObject</code> / <code>s3:PutObject</code> on the bucket.</li>
+</ul>
+
+<pre><code>-- Check NTP sync on Linux
+timedatectl status
+
+-- Verify credential is registered
+SELECT label, provider FROM objectstore_credential_list();
+
+-- Re-register with corrected config
+SELECT objectstore_credential_register('s3', 'prod-s3', '{
+    "bucket": "correct-bucket",
+    "region": "us-west-2",
+    "access_key_id": "CORRECT_KEY",
+    "secret_access_key": "CORRECT_SECRET"
+}'::jsonb);</code></pre>
+
+<h3>Pipeline Tasks Stuck in "waiting" State</h3>
+
+<p><strong>Symptom:</strong> Tasks remain in <code>waiting</code> status and never progress to <code>ready</code>.</p>
+
+<p><strong>Possible causes:</strong></p>
+<ul>
+  <li>A dependency task failed and is in <code>failed</code> status. The topological sort will not promote downstream tasks when a dependency has failed.</li>
+  <li>The background worker is not running (see background worker troubleshooting above).</li>
+  <li>A circular dependency exists in the DAG.</li>
+</ul>
+
+<pre><code>-- Inspect task run statuses
+SELECT t.task_name, tr.status, tr.error_message
+FROM   pipeline_task_runs  tr
+JOIN   pipeline_runs       pr ON pr.run_id = tr.run_id
+JOIN   pipeline_tasks      t  ON t.task_id = tr.task_id
+WHERE  pr.run_id = &lt;your_run_id&gt;
+ORDER  BY t.step_order;
+
+-- If a task failed, reset it to retry:
+UPDATE pipeline_task_runs
+SET    status = 'ready', error_message = NULL
+WHERE  task_run_id = &lt;failed_task_run_id&gt;;
+
+-- Check for circular dependencies (should return 0 rows)
+WITH RECURSIVE dep_check AS (
+    SELECT task_id, dep_task_id, ARRAY[task_id] AS path, false AS cycle
+    FROM   pipeline_task_deps
+  UNION ALL
+    SELECT d.task_id, d.dep_task_id,
+           c.path || d.task_id,
+           d.task_id = ANY(c.path)
+    FROM   pipeline_task_deps d
+    JOIN   dep_check c ON c.dep_task_id = d.task_id
+    WHERE  NOT c.cycle
+)
+SELECT * FROM dep_check WHERE cycle;</code></pre>
+
+<h3>Kafka Consumer Not Receiving Messages</h3>
+
+<p><strong>Symptom:</strong> <code>kafka_consumer_status()</code> shows <code>status = 'running'</code> but <code>messages_received</code> stays at 0.</p>
+
+<p><strong>Checks:</strong></p>
+<pre><code>-- Verify the consumer is enabled
+SELECT consumer_name, status, last_polled_at
+FROM   kafka_consumer_status();
+
+-- Check PostgreSQL log for rdkafka errors
+-- Linux: sudo journalctl -u alohadb | grep alohadb_kafka
+
+-- Test broker connectivity from the server
+-- (replace with your broker address)
+psql -c "SELECT alohadb_http_get('http://broker:9092')"
+-- or simply:
+-- nc -zv broker 9092
+
+-- Verify the topic exists on the broker
+-- (run from a machine with Kafka CLI tools)
+kafka-topics.sh --list --bootstrap-server broker:9092
+
+-- If USE_RDKAFKA was not compiled in, Kafka polling is a no-op.
+-- Check:
+SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname = 'kafka_consumer_start';</code></pre>
+
+<h3>Log and Diagnostics</h3>
+
+<pre><code>-- PostgreSQL server log location
+SHOW log_directory;
+SHOW log_filename;
+
+-- Enable more verbose logging for troubleshooting
+SET log_min_messages = 'DEBUG1';
+
+-- Check background worker registration
+SELECT name, pid, status
+FROM   pg_stat_activity
+WHERE  backend_type LIKE 'alohadb%'
+ORDER  BY name;
+
+-- Extension versions installed
+SELECT extname, extversion
+FROM   pg_extension
+WHERE  extname LIKE 'alohadb%'
+ORDER  BY extname;</code></pre>
+
+<!-- ================================================================ -->
+<hr>
+<h2 id="releases">Release Notes</h2>
+
+<h3>AlohaDB 20.0 (2025)</h3>
+
+<p><strong>New Extensions:</strong></p>
+<ul>
+  <li><strong>alohadb_vector 1.0</strong> &mdash; Dense vector type and IVFFlat ANN index (Lloyd's k-means, no HNSW patents)</li>
+  <li><strong>alohadb_geo 1.0</strong> &mdash; 2D geometry types: geo_point, geo_bbox, geo_polygon, geo_circle; ST_ spatial functions</li>
+  <li><strong>alohadb_ontology 1.0</strong> &mdash; RDF triple store and hierarchical type system</li>
+  <li><strong>alohadb_context 1.0</strong> &mdash; Entity disambiguation with domain-aware context profiles</li>
+  <li><strong>alohadb_intent 1.0</strong> &mdash; Document intent classification with keyword scoring and hierarchy</li>
+  <li><strong>alohadb_python 1.0</strong> &mdash; In-database Python execution with versioned script management</li>
+  <li><strong>alohadb_unified 1.0</strong> &mdash; Unified streaming and batch semantics via UNION ALL views</li>
+  <li><strong>alohadb_pipeline 1.0</strong> &mdash; DAG-based ETL pipeline orchestration with background worker</li>
+  <li><strong>alohadb_kafka 1.0</strong> &mdash; Kafka and Kinesis consumer with optional librdkafka support</li>
+  <li><strong>alohadb_objectstore 1.0</strong> &mdash; S3, GCS, Azure Blob storage via SigV4 and OAuth2</li>
+  <li><strong>alohadb_model_registry 1.0</strong> &mdash; ML model versioning, deployment lifecycle, and experiment tracking</li>
+</ul>
+
+<p><strong>Updated Extensions:</strong></p>
+<ul>
+  <li><strong>alohadb_parquet 1.1</strong> &mdash; Full Parquet column reader: PLAIN/DICTIONARY encoding, SNAPPY decompression, SETOF jsonb output</li>
+</ul>
+
+<p><strong>Base:</strong> PostgreSQL 18.0</p>
+
+<h3>Release Downloads</h3>
+
+<table>
+  <thead><tr><th>Platform</th><th>Package</th><th>Download</th></tr></thead>
+  <tbody>
+    <tr><td>Windows 10/11 x64</td><td><code>alohadb-20.0-windows-x64.exe</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+    <tr><td>Linux x86-64 (deb)</td><td><code>alohadb-20_amd64.deb</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+    <tr><td>Linux x86-64 (rpm)</td><td><code>alohadb-20.x86_64.rpm</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+    <tr><td>Linux ARM64 (deb)</td><td><code>alohadb-20_arm64.deb</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+    <tr><td>macOS x86-64 + Apple Silicon</td><td><code>alohadb-20.0-macos-universal.pkg</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+    <tr><td>Source tarball</td><td><code>alohadb-20.0.tar.gz</code></td><td><a href="https://www.OpenCan.ai/downloads">www.OpenCan.ai/downloads</a></td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="license">License</h2>
+
+<p>AlohaDB is distributed under the <strong>PostgreSQL License</strong> (a permissive open-source license similar to the MIT and BSD licenses), except where noted below.</p>
+
+<ul>
+  <li><strong>Core server and contrib extensions:</strong> PostgreSQL License</li>
+  <li><strong>librdkafka (optional dependency):</strong> Apache License 2.0</li>
+  <li><strong>OpenSSL (optional dependency):</strong> Apache License 2.0</li>
+  <li><strong>libcurl (optional dependency):</strong> MIT / curl License</li>
+</ul>
+
+<p>No patented algorithms are included. IVFFlat (Lloyd's k-means, 1957/1982; inverted index, 1960s) is used in place of HNSW (US10380099). All other algorithms are open standards or academic work with prior art predating applicable patent windows.</p>
+
+<hr>
+
+<p style="text-align:center; color:var(--fg-muted); font-size:0.85rem; margin-top:40px;">
+  AlohaDB 20.0 User Guide &mdash; Copyright &copy; 2025 Vern AllWorks LLC
+  &mdash; <a href="https://www.OpenCan.ai" style="color:var(--accent)">https://www.OpenCan.ai</a>
+</p>
+
+</main>
+</div>
+</body>
+</html>

@@ -5,6 +5,7 @@ alohadb_parquet_sources = files(
   'csv_reader.c',
   'json_reader.c',
   'parquet_reader.c',
+  'parquet_full.c',
 )
 
 if host_system == 'windows'
@@ -23,5 +24,6 @@ contrib_targets += alohadb_parquet
 install_data(
   'alohadb_parquet.control',
   'alohadb_parquet--1.0.sql',
+  'alohadb_parquet--1.0--1.1.sql',
   kwargs: contrib_data_args,
 )

@@ -1,0 +1,5 @@
+comment = 'AlohaDB Vector - Vector type, IVFFlat approximate nearest-neighbor index, and distance operators'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_vector'
+schema = public
+relocatable = false
