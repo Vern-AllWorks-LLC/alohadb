@@ -14,36 +14,13 @@
 -- cost.
 -- -----------------------------------------------------------------------
 
--- Shell type declaration (required before I/O functions)
-CREATE TYPE vector;
-
-CREATE FUNCTION vector_in(cstring)
-RETURNS vector
-LANGUAGE C IMMUTABLE STRICT
-AS 'MODULE_PATHNAME', 'vector_in';
-
-CREATE FUNCTION vector_out(vector)
-RETURNS cstring
-LANGUAGE C IMMUTABLE STRICT
-AS 'MODULE_PATHNAME', 'vector_out';
-
--- Fill in the type
-CREATE TYPE vector (
-    INTERNALLENGTH = VARIABLE,
-    INPUT          = vector_in,
-    OUTPUT         = vector_out,
-    STORAGE        = EXTERNAL,
-    ALIGNMENT      = double
-);
-
--- -----------------------------------------------------------------------
--- Scalar functions
--- -----------------------------------------------------------------------
-
-CREATE FUNCTION vector_dims(v vector)
-RETURNS int
-LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE
-AS 'MODULE_PATHNAME', 'vector_dims';
+-- The vector type itself is built into AlohaDB core (pg_catalog.vector,
+-- with I/O, vector_dims() and the <->, <=>, <#>, <+> operators).  This
+-- extension used to declare its own public.vector, which cannot coexist
+-- with the core type: "vector" always resolves to pg_catalog.vector first,
+-- so CREATE EXTENSION failed.  Both types share the same binary layout
+-- (varlena header, int16 dim, int16 pad, float4[]), so the functions below
+-- operate directly on the core type.
 
 -- L2 (Euclidean) distance — prior art: Euclid, ~300 BCE
 CREATE FUNCTION vector_l2_distance(a vector, b vector)
@@ -63,27 +40,7 @@ RETURNS float8
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE
 AS 'MODULE_PATHNAME', 'vector_neg_dot_product';
 
--- Operators
-CREATE OPERATOR <-> (
-    LEFTARG    = vector,
-    RIGHTARG   = vector,
-    PROCEDURE  = vector_l2_distance,
-    COMMUTATOR = '<->'
-);
-
-CREATE OPERATOR <=> (
-    LEFTARG    = vector,
-    RIGHTARG   = vector,
-    PROCEDURE  = vector_cosine_distance,
-    COMMUTATOR = '<=>'
-);
-
-CREATE OPERATOR <#> (
-    LEFTARG    = vector,
-    RIGHTARG   = vector,
-    PROCEDURE  = vector_neg_dot_product,
-    COMMUTATOR = '<#>'
-);
+-- Distance operators (<->, <=>, <#>) are provided by core.
 
 -- -----------------------------------------------------------------------
 -- IVFFlat index catalog (table-based, not a native index AM)
@@ -124,6 +81,11 @@ CREATE TABLE alohadb_vector_entries (
 
 CREATE INDEX alohadb_vector_entries_centroid_idx
     ON alohadb_vector_entries (index_name, centroid_id);
+
+-- Index data must survive al_dump / al_dumpall
+SELECT pg_catalog.pg_extension_config_dump('alohadb_vector_indexes', '');
+SELECT pg_catalog.pg_extension_config_dump('alohadb_vector_centroids', '');
+SELECT pg_catalog.pg_extension_config_dump('alohadb_vector_entries', '');
 
 -- -----------------------------------------------------------------------
 -- Index management API
@@ -183,7 +145,7 @@ CREATE FUNCTION vector_index_search(
     p_n_probes   int DEFAULT NULL  -- NULL = use index default
 )
 RETURNS TABLE(entry_id text, distance float8)
-LANGUAGE C VOLATILE STRICT
+LANGUAGE C VOLATILE  -- not STRICT: p_n_probes defaults to NULL
 AS 'MODULE_PATHNAME', 'vector_index_search';
 
 -- Rebuild (re-train) the index from the source table

@@ -40,6 +40,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Note: the AlohaDB server binary exports its own vector_in(cstring, oid,
+ * typmod), which the dynamic linker resolves ahead of this module's
+ * one-argument version.  Always pass all three arguments.
+ */
 PG_FUNCTION_INFO_V1(vector_index_insert);
 PG_FUNCTION_INFO_V1(vector_index_search);
 PG_FUNCTION_INFO_V1(vector_index_rebuild);
@@ -147,8 +152,9 @@ vector_index_insert(PG_FUNCTION_ARGS)
 	{
 		char   *vec_str = SPI_getvalue(SPI_tuptable->vals[i],
 									   SPI_tuptable->tupdesc, 2);
-		centroids[i] = (Vector *) DirectFunctionCall1(
-			vector_in, CStringGetDatum(vec_str));
+		centroids[i] = (Vector *) DirectFunctionCall3(
+			vector_in, CStringGetDatum(vec_str),
+			ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	}
 
 	best_centroid = find_nearest_centroid(vec, centroids,
@@ -239,10 +245,17 @@ vector_index_search(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("materialize mode required")));
 
+	/* Not STRICT (p_n_probes defaults to NULL): check the required args */
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2))
+		ereport(ERROR,
+				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+				 errmsg("vector_index_search: index name, query vector and k must not be NULL")));
+
 	index_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	query      = PG_GETARG_VECTOR(1);
 	k          = PG_GETARG_INT32(2);
 	n_probes   = PG_ARGISNULL(3) ? -1 : PG_GETARG_INT32(3);
+
 
 	tupdesc = CreateTemplateTupleDesc(2);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "entry_id", TEXTOID, -1, 0);
@@ -255,6 +268,9 @@ vector_index_search(PG_FUNCTION_ARGS)
 	rsinfo->setResult  = tupstore;
 	rsinfo->setDesc    = BlessTupleDesc(tupdesc);
 	MemoryContextSwitchTo(oldcxt);
+
+	if (k <= 0)
+		return (Datum) 0;		/* empty result */
 
 	SPI_connect();
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -329,8 +345,9 @@ vector_index_search(PG_FUNCTION_ARGS)
 							  SPI_tuptable->tupdesc, 1, &isnull));
 			vec_str = SPI_getvalue(SPI_tuptable->vals[i],
 								   SPI_tuptable->tupdesc, 2);
-			c = (Vector *) DirectFunctionCall1(
-				vector_in, CStringGetDatum(vec_str));
+			c = (Vector *) DirectFunctionCall3(
+				vector_in, CStringGetDatum(vec_str),
+			ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 
 			if (strcmp(metric, "cosine") == 0)
 				cdists[i].dist = vector_cosine_dist(query, c);
@@ -367,7 +384,8 @@ vector_index_search(PG_FUNCTION_ARGS)
 			probe_ids[i] = cdists[i].centroid_id;
 
 		heap_cap = k * 2 + 16;
-		heap     = palloc(sizeof(HeapEntry) * heap_cap);
+		/* Must outlive SPI_finish(): allocate in the caller's context */
+		heap     = MemoryContextAlloc(oldcxt, sizeof(HeapEntry) * heap_cap);
 
 		/* For each probe centroid, load entries and compute exact distances */
 		for (i = 0; i < (uint64) n_probes; i++)
@@ -401,8 +419,9 @@ vector_index_search(PG_FUNCTION_ARGS)
 									  SPI_tuptable->tupdesc, 2);
 				if (!eid || !vec_str) continue;
 
-				ev = (Vector *) DirectFunctionCall1(
-					vector_in, CStringGetDatum(vec_str));
+				ev = (Vector *) DirectFunctionCall3(
+					vector_in, CStringGetDatum(vec_str),
+			ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 
 				if (strcmp(metric, "cosine") == 0)
 					dist = vector_cosine_dist(query, ev);
@@ -542,9 +561,11 @@ vector_index_rebuild(PG_FUNCTION_ARGS)
 
 	/* Load all vectors from source table */
 	initStringInfo(&sql);
+	/* %I is a format() specifier, not a C one: quote identifiers here */
 	appendStringInfo(&sql,
-		"SELECT %I::text, %I::text FROM %I WHERE %I IS NOT NULL",
-		id_column, vector_column, source_table, vector_column);
+		"SELECT %s::text, %s::text FROM %s WHERE %s IS NOT NULL",
+		quote_identifier(id_column), quote_identifier(vector_column),
+		quote_identifier(source_table), quote_identifier(vector_column));
 
 	ret = SPI_execute(sql.data, true, 0);
 	pfree(sql.data);
@@ -585,7 +606,8 @@ vector_index_rebuild(PG_FUNCTION_ARGS)
 			char *vec_str = SPI_getvalue(SPI_tuptable->vals[j], SPI_tuptable->tupdesc, 2);
 
 			ids[j]  = pstrdup(id_str  ? id_str  : "");
-			vecs[j] = (Vector *) DirectFunctionCall1(vector_in, CStringGetDatum(vec_str));
+			vecs[j] = (Vector *) DirectFunctionCall3(vector_in, CStringGetDatum(vec_str),
+			ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 			assignments[j] = j % n_lists;	/* initial assignment */
 		}
 

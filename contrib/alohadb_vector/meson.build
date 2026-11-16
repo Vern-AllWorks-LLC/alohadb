@@ -23,3 +23,14 @@ install_data(
   'alohadb_vector--1.0.sql',
   kwargs: contrib_data_args,
 )
+
+tests += {
+  'name': 'alohadb_vector',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'vector',
+    ],
+  },
+}
