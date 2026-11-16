@@ -7,7 +7,7 @@
  *	  for testing migrations, experiments, and safe schema evolution.
  *
  *	  Each branch is a separate PostgreSQL data directory created via
- *	  pg_basebackup with WAL timeline forking.  On filesystems that
+ *	  al_basebackup with WAL timeline forking.  On filesystems that
  *	  support reflinks (e.g., XFS, Btrfs, APFS), the copy is
  *	  near-instantaneous via copy-on-write semantics.
  *
@@ -34,6 +34,8 @@
 #include "miscadmin.h"
 #include "postmaster/postmaster.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
+#include "utils/varlena.h"
 #include "utils/pg_lsn.h"
 
 #include "alohadb_branch.h"
@@ -176,6 +178,129 @@ branch_find_next_port(void)
 }
 
 /*
+ * branch_shell_quote
+ *
+ * Return a single-quoted copy of "s" safe to splice into a /bin/sh command.
+ */
+static char *
+branch_shell_quote(const char *s)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	appendStringInfoChar(&buf, '\'');
+	for (; *s; s++)
+	{
+		if (*s == '\'')
+			appendStringInfoString(&buf, "'\\''");
+		else
+			appendStringInfoChar(&buf, *s);
+	}
+	appendStringInfoChar(&buf, '\'');
+	return buf.data;
+}
+
+/*
+ * branch_pidfile_pid
+ *
+ * Return the postmaster PID recorded in <data_dir>/alohadb.pid, or 0 if
+ * the file is missing or unreadable.
+ */
+static pid_t
+branch_pidfile_pid(const char *data_dir)
+{
+	char	   *path = psprintf("%s/alohadb.pid", data_dir);
+	FILE	   *fp = fopen(path, "r");
+	long		pid = 0;
+
+	pfree(path);
+	if (fp == NULL)
+		return 0;
+	if (fscanf(fp, "%ld", &pid) != 1)
+		pid = 0;
+	fclose(fp);
+	return (pid_t) pid;
+}
+
+/*
+ * branch_remove_lock_files
+ *
+ * A base backup must never carry the source server's lock/options files:
+ * al_ctl would treat the copied PID as the branch's postmaster and could
+ * signal the main server.  Remove them defensively.
+ */
+static void
+branch_remove_lock_files(const char *data_dir)
+{
+	const char *names[] = {"alohadb.pid", "alohadb.opts",
+						   "postmaster.pid", "postmaster.opts"};
+
+	for (int i = 0; i < lengthof(names); i++)
+	{
+		char	   *path = psprintf("%s/%s", data_dir, names[i]);
+
+		if (unlink(path) != 0 && errno != ENOENT)
+			ereport(WARNING,
+					(errcode_for_file_access(),
+					 errmsg("could not remove \"%s\": %m", path)));
+		pfree(path);
+	}
+}
+
+/*
+ * Libraries that must not run inside a branch: they bind fixed ports
+ * (alohadb_pool, alohadb_restapi) or act on the outside world (cron jobs,
+ * Kafka consumers, auto-suspend commands) and would double up with the
+ * parent server.
+ */
+static const char *const branch_excluded_libraries[] = {
+	"alohadb_pool", "alohadb_restapi", "alohadb_cron",
+	"alohadb_kafka", "alohadb_scale"
+};
+
+/*
+ * branch_preload_libraries
+ *
+ * The parent's shared_preload_libraries minus branch_excluded_libraries,
+ * formatted for a config file value.
+ */
+static char *
+branch_preload_libraries(void)
+{
+	const char *cur = GetConfigOption("shared_preload_libraries", true, false);
+	char	   *raw;
+	List	   *elems = NIL;
+	StringInfoData buf;
+	bool		first = true;
+
+	initStringInfo(&buf);
+	if (cur == NULL || cur[0] == '\0')
+		return buf.data;
+
+	raw = pstrdup(cur);
+	if (!SplitGUCList(raw, ',', &elems))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("could not parse shared_preload_libraries")));
+
+	foreach_ptr(char, lib, elems)
+	{
+		bool		excluded = false;
+
+		for (int i = 0; i < lengthof(branch_excluded_libraries); i++)
+			if (strcmp(lib, branch_excluded_libraries[i]) == 0)
+				excluded = true;
+		if (excluded)
+			continue;
+		if (!first)
+			appendStringInfoString(&buf, ",");
+		appendStringInfoString(&buf, lib);
+		first = false;
+	}
+	return buf.data;
+}
+
+/*
  * branch_exec_command
  *
  * Execute a shell command and return its exit status.
@@ -224,7 +349,7 @@ branch_ensure_dir(void)
 /*
  * branch_write_config_overrides
  *
- * Write a postgresql.auto.conf into the branch data directory with
+ * Write the auto.conf (alohadb.auto.conf) into the branch data directory with
  * overrides for port and unix_socket_directories.
  */
 static void
@@ -232,8 +357,9 @@ branch_write_config_overrides(const char *data_dir, int port)
 {
 	char	   *conf_path;
 	FILE	   *fp;
+	char	   *libs = branch_preload_libraries();
 
-	conf_path = psprintf("%s/postgresql.auto.conf", data_dir);
+	conf_path = psprintf("%s/%s", data_dir, PG_AUTOCONF_FILENAME);
 
 	fp = fopen(conf_path, "w");
 	if (fp == NULL)
@@ -253,6 +379,11 @@ branch_write_config_overrides(const char *data_dir, int port)
 	 */
 	fprintf(fp, "archive_mode = off\n");
 	fprintf(fp, "primary_conninfo = ''\n");
+
+	/* Keep port-binding / side-effecting workers out of the branch */
+	fprintf(fp, "shared_preload_libraries = '%s'\n", libs);
+	fprintf(fp, "alohadb.audit_log_directory = '%s/log/audit'\n", data_dir);
+	pfree(libs);
 
 	if (fclose(fp) != 0)
 		ereport(ERROR,
@@ -290,7 +421,7 @@ branch_write_recovery_conf(const char *data_dir, XLogRecPtr target_lsn)
 	{
 		char	   *conf_path;
 
-		conf_path = psprintf("%s/postgresql.auto.conf", data_dir);
+		conf_path = psprintf("%s/%s", data_dir, PG_AUTOCONF_FILENAME);
 
 		fp = fopen(conf_path, "a");
 		if (fp == NULL)
@@ -322,7 +453,7 @@ branch_write_recovery_conf(const char *data_dir, XLogRecPtr target_lsn)
  */
 static void
 branch_insert_metadata(const char *name, XLogRecPtr lsn, int port,
-					   const char *data_dir)
+					   const char *data_dir, const char *status)
 {
 	StringInfoData buf;
 	int			ret;
@@ -336,13 +467,13 @@ branch_insert_metadata(const char *name, XLogRecPtr lsn, int port,
 						 name,
 						 LSN_FORMAT_ARGS(lsn),
 						 port, data_dir,
-						 BRANCH_STATUS_RUNNING);
+						 status);
 	else
 		appendStringInfo(&buf,
 						 "INSERT INTO alohadb_branches (name, parent_lsn, port, data_dir, status) "
 						 "VALUES ('%s', NULL, %d, '%s', '%s')",
 						 name, port, data_dir,
-						 BRANCH_STATUS_RUNNING);
+						 status);
 
 	ret = SPI_execute(buf.data, false, 0);
 	if (ret != SPI_OK_INSERT)
@@ -391,9 +522,9 @@ branch_delete_metadata(const char *name)
  * RETURNS record
  *
  * Creates a new database branch by:
- *   1. Taking a base backup of the current server via pg_basebackup
+ *   1. Taking a base backup of the current server via al_basebackup
  *   2. Optionally configuring point-in-time recovery to from_lsn
- *   3. Writing postgresql.auto.conf overrides (different port, socket dir)
+ *   3. Writing alohadb.auto.conf overrides (port, socket dir, workers)
  *   4. Starting the branch as an independent postmaster
  *   5. Recording metadata in the alohadb_branches table
  *
@@ -414,6 +545,7 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 	bool		nulls[CREATE_BRANCH_COLS];
 	HeapTuple	result_tuple;
 	char		pg_bindir[MAXPGPATH];
+	bool		started = true;
 
 	/* Superuser check */
 	if (!superuser())
@@ -487,7 +619,7 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 	branch_ensure_dir();
 
 	/*
-	 * Step 1: Create the branch data directory via pg_basebackup.
+	 * Step 1: Create the branch data directory via al_basebackup.
 	 *
 	 * We use streaming mode (-Xs) and plain format (-Fp) to get a usable
 	 * data directory directly.  The --no-sync flag speeds up the copy;
@@ -526,13 +658,15 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 			strlcpy(sockdir, "/tmp", MAXPGPATH);
 
 		appendStringInfo(&cmd,
-						 "%s/pg_basebackup -D %s -Fp -Xs --no-sync "
+						 "%s -D %s -Fp -Xs --no-sync "
 						 "-h %s -p %d --checkpoint=fast 2>&1",
-						 pg_bindir, data_dir, sockdir, PostPortNumber);
+						 branch_shell_quote(psprintf("%s/al_basebackup", pg_bindir)),
+						 branch_shell_quote(data_dir),
+						 branch_shell_quote(sockdir), PostPortNumber);
 	}
 
 	ereport(NOTICE,
-			(errmsg("creating branch \"%s\" via pg_basebackup...",
+			(errmsg("creating branch \"%s\" via al_basebackup...",
 					branch_name)));
 
 	rc = branch_exec_command(cmd.data);
@@ -542,18 +676,21 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 		StringInfoData cleanup;
 
 		initStringInfo(&cleanup);
-		appendStringInfo(&cleanup, "rm -rf %s", data_dir);
+		appendStringInfo(&cleanup, "rm -rf %s", branch_shell_quote(data_dir));
 		(void) system(cleanup.data);
 		pfree(cleanup.data);
 
 		ereport(ERROR,
 				(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
-				 errmsg("pg_basebackup failed with exit code %d", rc),
+				 errmsg("al_basebackup failed with exit code %d", rc),
 				 errhint("Check server logs and ensure WAL archiving or "
 						 "replication slots are configured.")));
 	}
 
 	resetStringInfo(&cmd);
+
+	/* Never let the branch inherit the parent's lock/options files */
+	branch_remove_lock_files(data_dir);
 
 	/*
 	 * Step 2: Write configuration overrides for the branch.
@@ -581,7 +718,7 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 	}
 
 	/*
-	 * Step 5: Remove any standby.signal that pg_basebackup may have left,
+	 * Step 5: Remove any standby.signal that al_basebackup may have left,
 	 * unless we explicitly want recovery mode.
 	 */
 	if (target_lsn == InvalidXLogRecPtr)
@@ -594,12 +731,15 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 	}
 
 	/*
-	 * Step 6: Start the branch postmaster using pg_ctl.
+	 * Step 6: Start the branch postmaster using al_ctl.
 	 */
 	appendStringInfo(&cmd,
-					 "%s/pg_ctl start -D %s -l %s/log/branch.log "
+					 "%s start -D %s -l %s "
 					 "-o \"-p %d\" -w 2>&1",
-					 pg_bindir, data_dir, data_dir, port);
+					 branch_shell_quote(psprintf("%s/al_ctl", pg_bindir)),
+					 branch_shell_quote(data_dir),
+					 branch_shell_quote(psprintf("%s/log/branch.log", data_dir)),
+					 port);
 
 	ereport(NOTICE,
 			(errmsg("starting branch \"%s\" on port %d...",
@@ -608,8 +748,9 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 	rc = branch_exec_command(cmd.data);
 	if (rc != 0)
 	{
+		started = false;
 		ereport(WARNING,
-				(errmsg("pg_ctl start failed with exit code %d for branch \"%s\"",
+				(errmsg("al_ctl start failed with exit code %d for branch \"%s\"",
 						rc, branch_name),
 				 errhint("The data directory has been preserved at \"%s\". "
 						 "Check %s/log/branch.log for details.",
@@ -629,7 +770,8 @@ alohadb_create_branch(PG_FUNCTION_ARGS)
 		else
 			recorded_lsn = GetXLogWriteRecPtr();
 
-		branch_insert_metadata(branch_name, recorded_lsn, port, data_dir);
+		branch_insert_metadata(branch_name, recorded_lsn, port, data_dir,
+							   started ? BRANCH_STATUS_RUNNING : BRANCH_STATUS_ERROR);
 	}
 
 	SPI_finish();
@@ -862,14 +1004,34 @@ alohadb_drop_branch(PG_FUNCTION_ARGS)
 	 * branch might already be stopped.
 	 */
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd,
-					 "%s/pg_ctl stop -D %s -m fast 2>&1",
-					 pg_bindir, data_dir);
+	{
+		pid_t		bpid = branch_pidfile_pid(data_dir);
 
-	ereport(NOTICE,
-			(errmsg("stopping branch \"%s\"...", branch_name)));
+		/*
+		 * Refuse to signal anything that is not the branch's own postmaster.
+		 * A lock file carrying this server's PID (e.g. copied by an older
+		 * base backup) would otherwise make al_ctl stop the parent server.
+		 */
+		if (bpid == PostmasterPid || bpid == MyProcPid || bpid == getppid())
+		{
+			ereport(WARNING,
+					(errmsg("branch \"%s\" lock file names this server's process %d; not stopping it",
+							branch_name, (int) bpid)));
+			branch_remove_lock_files(data_dir);
+		}
+		else if (bpid > 0)
+		{
+			appendStringInfo(&cmd,
+							 "%s stop -D %s -m fast 2>&1",
+							 branch_shell_quote(psprintf("%s/al_ctl", pg_bindir)),
+							 branch_shell_quote(data_dir));
 
-	(void) branch_exec_command(cmd.data);
+			ereport(NOTICE,
+					(errmsg("stopping branch \"%s\"...", branch_name)));
+
+			(void) branch_exec_command(cmd.data);
+		}
+	}
 
 	/*
 	 * Step 2: Remove the data directory.
@@ -893,7 +1055,7 @@ alohadb_drop_branch(PG_FUNCTION_ARGS)
 	}
 
 	resetStringInfo(&cmd);
-	appendStringInfo(&cmd, "rm -rf %s", data_dir);
+	appendStringInfo(&cmd, "rm -rf %s", branch_shell_quote(data_dir));
 
 	ereport(NOTICE,
 			(errmsg("removing branch data directory \"%s\"...", data_dir)));
