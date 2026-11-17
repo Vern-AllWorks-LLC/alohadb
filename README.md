@@ -833,7 +833,7 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 
 ## Release notes
 
-### Unreleased — AI/ML & scientific features
+### 20.2.0 — November 2026
 
 - New extensions: `alohadb_graph` (enforced property-graph schemas, traversal, temporal paths, PageRank, point-in-time GNN sampling), `alohadb_bitemporal`, `alohadb_lineage` (dataset snapshots, model→data lineage, zero-copy table branches), `alohadb_embeddings` (embedding lifecycle, hybrid vector + full-text search), `alohadb_ndarray` (chunked compressed N-d arrays), `alohadb_measure` (units, uncertainty, provenance), `alohadb_tsfunc` (LTTB, resampling, as-of joins, Gorilla codecs).
 - `alohadb_parquet` 1.2: `write_parquet`, `write_arrow`, `arrow_ipc_stream`; `read_parquet` rewritten (it returned no rows for files written by PyArrow).

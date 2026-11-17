@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # ---- Constants -------------------------------------------------------------
-ALOHADB_VERSION="20.1"
+ALOHADB_VERSION="20.2"
 MIN_CPUS=2
 MIN_RAM_MB=1024
 MIN_DISK_MB=2048
