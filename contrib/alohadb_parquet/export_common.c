@@ -22,6 +22,7 @@
 
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -382,6 +383,29 @@ append_f32_array(StringInfo s, const float *v, int n)
  * ----------------------------------------------------------------
  */
 
+
+/*
+ * Resolve a path to its canonical absolute form (forward slashes).  On POSIX
+ * this is realpath() (the path must exist); on Windows _fullpath(), plus an
+ * explicit existence check, which _fullpath() does not do.
+ */
+static char *
+export_realpath(const char *path, char *resolved)
+{
+#ifdef WIN32
+	struct stat st;
+
+	if (_fullpath(resolved, path, PARQUET_MAX_PATH_LEN) == NULL)
+		return NULL;
+	if (stat(resolved, &st) != 0)
+		return NULL;
+	canonicalize_path(resolved);
+	return resolved;
+#else
+	return realpath(path, resolved);
+#endif
+}
+
 /* Is resolved absolute path "full" inside one of the allowed directories? */
 static bool
 export_path_allowed(const char *full)
@@ -411,7 +435,8 @@ export_path_allowed(const char *full)
 		if (dl == 0 || !is_absolute_path(tok))
 			continue;
 
-		dir = realpath(tok, resolved) ? resolved : tok;
+		canonicalize_path(tok);
+		dir = export_realpath(tok, resolved) ? resolved : tok;
 		dl = strlen(dir);
 		while (dl > 1 && dir[dl - 1] == '/')
 			dir[--dl] = '\0';
@@ -459,7 +484,12 @@ export_check_output_path(const char *path)
 				 errmsg("output path is too long")));
 
 	copy = pstrdup(path);
+	canonicalize_path(copy);	/* also turns '\\' into '/' on Windows */
 	sep = strrchr(copy, '/');
+	if (sep == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_NAME),
+				 errmsg("output path must be absolute: \"%s\"", path)));
 	*sep = '\0';
 	base = sep + 1;
 	dir = (copy[0] == '\0') ? "/" : copy;
@@ -469,7 +499,7 @@ export_check_output_path(const char *path)
 				(errcode(ERRCODE_INVALID_NAME),
 				 errmsg("output path \"%s\" does not name a file", path)));
 
-	if (realpath(dir, resolved) == NULL)
+	if (export_realpath(dir, resolved) == NULL)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not access output directory \"%s\": %m", dir)));
