@@ -17,6 +17,7 @@
 #include "hnsw.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/optimizer.h"
+#include "utils/float.h"
 #include "utils/spccache.h"
 
 /*
@@ -51,6 +52,21 @@ hnswcostestimate(struct PlannerInfo *root,
 	double		spc_random_page_cost;
 	double		layerTraversal;
 	int			efSearch = hnsw_ef_search;
+
+	/*
+	 * These indexes can only return tuples ordered by distance; a scan
+	 * without an ORDER BY operator would return nothing.  Make such paths
+	 * prohibitively expensive so the planner never picks them.
+	 */
+	if (path->indexorderbys == NIL)
+	{
+		*indexStartupCost = get_float8_infinity();
+		*indexTotalCost = get_float8_infinity();
+		*indexSelectivity = 0;
+		*indexCorrelation = 0;
+		*indexPages = 0;
+		return;
+	}
 
 	/*
 	 * Get the tablespace-specific random page cost.

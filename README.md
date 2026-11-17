@@ -20,6 +20,24 @@ SELECT a <=> b AS cosine_dist FROM embeddings;
 
 **Use case:** Power semantic search and RAG retrieval by finding the nearest embeddings to a query vector.
 
+### `alohadb_embeddings` — Embedding lifecycle & hybrid retrieval
+
+Keeps embeddings in sync with your tables: it records which model and version produced each vector, re-embeds rows in the background when their content changes, keeps several model versions side by side until you promote one, and enforces each model's dimensions. A single SQL statement combines vector similarity, PostgreSQL full-text ranking (fused with Reciprocal Rank Fusion) and a relational filter, under the caller's privileges and row-level security. Embedding is pluggable through any SQL function `fn(text) → vector`; binary and int8 quantization helpers support two-stage search.
+
+```sql
+CREATE EXTENSION alohadb_embeddings;
+SELECT embedding_model_register('minilm', 'v1', 384, 'cosine', 'my_embed(text)');
+SELECT embedding_track('docs', 'id', 'title || '' '' || body', 'minilm', 'v1');
+SELECT embedding_process(500);                 -- schedule with alohadb_cron
+SELECT * FROM embedding_search_text('docs', 'reset my password', 5);
+SELECT * FROM embedding_hybrid_search('docs', my_embed('reset password'),
+       'reset password', 10, filter => $$lang = 'en'$$);
+SELECT embedding_reembed('docs', 'minilm', 'v1', 'minilm', 'v2');
+SELECT embedding_promote('docs', 'minilm@v2');
+```
+
+**Use case:** Run RAG retrieval and model upgrades without a separate pipeline: change a row and its embedding is refreshed; roll out a new model version next to the old one, then switch over.
+
 ### `alohadb_gpu` — GPU-offloaded vector ops
 
 GPU-offloaded vector operations: batch distance, top-K, and matrix multiply for high-throughput embedding workloads.
@@ -118,6 +136,24 @@ SELECT * FROM ontology_history('Honolulu');
 ```
 
 **Use case:** Model domain knowledge as subject-predicate-object facts and traverse relationships for reasoning.
+
+### `alohadb_graph` — Property graphs over ordinary tables
+
+Turns ordinary tables into a property graph: register vertex and edge labels, enforce the graph schema with real foreign keys and CHECK constraints (and report violations in existing data), then run BFS, Dijkstra shortest paths, time-respecting earliest-arrival paths, PageRank, connected components and degree in C. Results are sets, so they compose with CTEs, joins and window functions, and edges are read as the calling user, so privileges and row-level security apply. Edge labels with `valid_from`/`valid_to` columns support point-in-time (`as_of`) traversal, and seeded GraphSAGE-style uniform neighbour sampling plus neighbour-feature aggregation build GNN training sets that never see future edges.
+
+```sql
+CREATE EXTENSION alohadb_graph;
+SELECT graph_create('social');
+SELECT graph_add_vertex_label('social', 'person', 'person');
+SELECT graph_add_edge_label('social', 'follows', 'follows', 'src', 'person', 'dst', 'person',
+                            valid_from_column => 'since', valid_to_column => 'until');
+SELECT * FROM graph_bfs('social', 42, 2, as_of => '2025-06-01');
+SELECT * FROM graph_pagerank('social') ORDER BY rank DESC LIMIT 10;
+SELECT * FROM graph_sample_neighbors('social', ARRAY[42, 7], ARRAY[10, 5],
+                                     as_of => '2025-06-01', seed => 1);
+```
+
+**Use case:** Fraud rings, recommendation and supply-chain graphs kept in normal tables, queried with SQL, and sampled at a point in time to build leak-free GNN training sets.
 
 ### `alohadb_context` — Entity disambiguation & reranking
 
@@ -240,17 +276,35 @@ SELECT * FROM alohadb_columnar_info('events_col');
 
 **Use case:** Store large analytical tables compressed and scan only the columns a query needs.
 
-### `alohadb_parquet` — Parquet, CSV & JSON reader
+### `alohadb_ndarray` — Chunked N-d arrays with server-side math
 
-Read Parquet, CSV, and JSON files directly as sets of `jsonb` rows.
+Zarr/HDF5-style N-dimensional arrays stored as ordinary tables: a regular grid of zstd-compressed, row-major chunks (float32/float64/int32/int64) where unwritten chunks read as a fill value. Slice with start/stop/step into `float8[]` or the core `tensor` type, write regions with row-level chunk locking, and run streaming reductions, per-axis reductions, elementwise map/binary ops and blocked matmul without materialising the whole array. Also adds `tensor_slice` / `tensor_index` for the core `tensor` type.
+
+```sql
+CREATE EXTENSION alohadb_ndarray;
+SELECT ndarray_create('temps', 'float32', '{365,180,360}', '{30,90,90}', fill_value => 'NaN');
+SELECT ndarray_write('temps', '{0,0,0}', :day0_grid);                  -- float8[] region
+SELECT ndarray_read('temps', '{0,40,100}', '{31,50,120}', '{1,1,2}');  -- strided slice
+SELECT ndarray_reduce('temps', 'mean', '{0,40,100}', '{31,50,120}');
+SELECT ndarray_map('temps', 'temps_f', 'mul', 1.8);                   -- chunkwise into a new array
+SELECT * FROM ndarray_storage('temps');                                -- chunks, bytes, ratio
+```
+
+**Use case:** Keep large scientific, imaging or ML feature arrays inside the database and compute slices and statistics where the data lives.
+
+### `alohadb_parquet` — Parquet, CSV & JSON reader; Parquet & Arrow writer
+
+Read Parquet, CSV and JSON files directly as sets of `jsonb` rows, and export any query straight to Parquet or a memory-mappable Arrow IPC file that PyTorch/JAX dataloaders, PyArrow, Polars, DuckDB and lakehouse engines read without an ETL round trip. Writing requires `pg_write_server_files` and a directory listed in `alohadb.parquet_allowed_paths`; `arrow_ipc_stream()` returns Arrow stream messages to the client instead.
 
 ```sql
 CREATE EXTENSION alohadb_parquet;
 SELECT * FROM read_parquet('/data/sales.parquet');
 SELECT * FROM read_csv('/data/import.csv', ',', true);
+SELECT write_parquet('SELECT id, ts, embedding FROM events', '/data/events.parquet', 'snappy');
+SELECT write_arrow('SELECT id, embedding FROM items', '/data/items.arrow');
 ```
 
-**Use case:** Query files on disk in place without a separate ETL load step.
+**Use case:** Query files on disk in place, and hand query results to ML training and lakehouse tools as Parquet/Arrow without a separate ETL step.
 
 ### `alohadb_objectstore` — S3, GCS & Azure storage
 
@@ -399,6 +453,23 @@ SELECT * FROM alohadb_versions_between('orders', '2026-01-01', '2026-02-01')
 
 **Use case:** Audit how a record looked at any past point in time without manual history tables.
 
+### `alohadb_bitemporal` — Bitemporal tables
+
+SQL:2011-style bitemporal tables that track two timelines per row: when a fact is true in the real world (`valid_from`/`valid_to`) and when the database recorded it (`sys_from`/`sys_to`, managed by triggers). Superseded versions move to a `<tbl>_history` table, overlapping valid periods per key are rejected, sequenced `FOR PORTION OF`-style updates and deletes split or trim periods automatically, and `bitemporal_as_of` answers "what did we believe on date X about date Y".
+
+```sql
+CREATE EXTENSION alohadb_bitemporal;
+SELECT bitemporal_enable('price', ARRAY['product_id']);
+INSERT INTO price (product_id, price, valid_from) VALUES (1, 100, '2024-01-01');
+-- retroactive correction: the price was really 110 from Feb 1st
+SELECT bitemporal_update('price', '{"product_id": 1}', '2024-02-01', NULL, '{"price": 110}');
+-- what did we believe on 2024-01-20 about 2024-02-10?
+SELECT * FROM bitemporal_as_of(NULL::price, '2024-02-10', '2024-01-20');
+SELECT * FROM bitemporal_history('price', '{"product_id": 1}');
+```
+
+**Use case:** Auditable pricing, insurance, HR, lab and financial records where late corrections must not erase what was known when a decision was made.
+
 ### `alohadb_timeseries` — Auto-partition management
 
 Automatic partition management for time-series tables via a background worker, including pre-creation and retention.
@@ -424,6 +495,26 @@ SELECT analytics_moving_avg(value, 7) OVER (ORDER BY ts) FROM readings;
 ```
 
 **Use case:** Maintain rolled-up dashboards and smooth noisy time-series with windowed hyperfunctions.
+
+### `alohadb_tsfunc` — Scientific time-series functions
+
+Native functions for sensor and lab-instrument data: LTTB and min/max downsampling for charts, resampling of irregularly sampled series onto a regular grid (linear, LOCF, nearest or bucket mean, with a `max_gap` cut-off), as-of joins (a merge-based `ts_asof_join` over timestamp arrays plus a `ts_asof` row lookup for `LATERAL`), out-of-order cleanup with `ts_sort_dedup`, and standalone Gorilla-style codecs (delta-of-delta timestamps, XOR-packed floats) that store a whole series in one `bytea` value with bit-exact round trips — about 1 bit per regular timestamp.
+
+```sql
+CREATE EXTENSION alohadb_tsfunc;
+SELECT sensor, ts_resample(ts, v, '1 minute', 'linear', NULL, '5 minutes')
+  FROM readings GROUP BY sensor;
+SELECT * FROM unnest((SELECT ts_lttb(ts, v, 500) FROM readings WHERE sensor = 7));
+-- as-of join: latest quote at or before each trade
+SELECT t.*, q.bid FROM trades t
+LEFT JOIN LATERAL (SELECT bid FROM quotes q WHERE q.sym = t.sym AND q.ts <= t.ts
+                   ORDER BY q.ts DESC LIMIT 1) q ON true;
+INSERT INTO daily_series SELECT sensor, day,
+  ts_encode_timestamps(array_agg(ts ORDER BY ts)), ts_encode_floats(array_agg(v ORDER BY ts))
+FROM raw GROUP BY sensor, day;
+```
+
+**Use case:** Align irregular instrument readings to a common grid, plot a million-point trace with 500 faithful points, and keep one compact row per sensor per day.
 
 ### `alohadb_approx` — Approximate query processing
 
@@ -557,6 +648,24 @@ SELECT alohadb_drop_branch('feature-x');
 
 **Use case:** Spin up an isolated copy of the database to test a risky migration, then discard it.
 
+### `alohadb_lineage` — Dataset snapshots, model lineage & zero-copy branches
+
+Named, zero-copy snapshots of system-versioned (`alohadb_temporal`) or bitemporal tables: each records a timestamp plus per-table row counts and an order-independent content hash, and `lineage_verify` proves it can still be reproduced from history. Model versions link to the snapshot they were trained on, so "what did the dataset look like when model v3 was trained?" is one query. Git-like table branches overlay a delta table and tombstones on the base as of the branch point; the branch view is writable and can be diffed and merged back with conflict detection.
+
+```sql
+CREATE EXTENSION alohadb_lineage;
+SELECT * FROM lineage_snapshot('train_v3', ARRAY['customers'::regclass], 'churn v3 training set');
+SELECT lineage_link_model('churn', 'v3', 'train_v3', '{"auc": 0.91}');
+SELECT * FROM lineage_read('customers', 'churn', 'v3');      -- rows as trained on
+SELECT * FROM lineage_verify('train_v3');                    -- still reproducible?
+SELECT lineage_branch_create('exp1', 'customers');           -- writable view customers__exp1
+UPDATE customers__exp1 SET segment = 'vip' WHERE id = 3;
+SELECT * FROM lineage_branch_diff('exp1', 'customers');
+SELECT * FROM lineage_branch_merge('exp1', 'customers');
+```
+
+**Use case:** Reproducible ML training and safe what-if experiments on production tables without copying data.
+
 ### `alohadb_schema_change` — Online DDL
 
 Online schema changes (DDL) performed via a copy-and-swap process to avoid long table locks.
@@ -647,6 +756,22 @@ SELECT ST_Contains(poly, ST_Point(-157.8, 21.3)) FROM regions;
 
 **Use case:** Store points and polygons and run distance and containment queries with bounding-box indexes.
 
+### `alohadb_measure` — Units, uncertainty & provenance
+
+A `measurement` column type that stores a value, its standard uncertainty and its SI unit together: error bars propagate through arithmetic and aggregates using the GUM first-order rules, incompatible units are rejected, and conversion covers SI prefixes plus common units (°C, mi, kWh, eV…). A W3C PROV-style provenance log records who wrote each row (graph edges included) and traces what each result was derived from; row-level security limits each role to provenance of tables it can access.
+
+```sql
+CREATE EXTENSION alohadb_measure;
+CREATE TABLE runs (id int PRIMARY KEY, g measurement);
+SELECT prov_track('runs', 'id', 'pendulum');
+INSERT INTO runs VALUES (1, '9.81 ± 0.02 m/s^2'), (2, '9.79(3) m/s^2');
+SELECT m_wmean(g), m_convert(m_wmean(g), 'ft/s^2') FROM runs;
+SELECT '5 ± 0.1 kg'::measurement * '9.81 ± 0.02 m/s^2';
+SELECT * FROM prov_lineage('runs', '1');
+```
+
+**Use case:** Keep scientific and engineering results qualified: units checked, error bars propagated, and the origin of every value traceable.
+
 ## Building for macOS, Linux & Windows
 
 AlohaDB builds from source with Meson + Ninja (the toolchain PostgreSQL 18 uses), producing the server plus the bundled `alohadb_*` extensions. Build natively on each OS. A few extensions depend on external native libraries (ONNX Runtime, Apache Arrow, librdkafka, OpenCL/CUDA): the core server builds everywhere, while full extension parity on Windows may require a reduced set.
@@ -698,6 +823,14 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 **Use case:** Produce installable AlohaDB packages for all three platforms from one push, with optional notarization/signing steps.
 
 ## Release notes
+
+### Unreleased — AI/ML & scientific features
+
+- New extensions: `alohadb_graph` (enforced property-graph schemas, traversal, temporal paths, PageRank, point-in-time GNN sampling), `alohadb_bitemporal`, `alohadb_lineage` (dataset snapshots, model→data lineage, zero-copy table branches), `alohadb_embeddings` (embedding lifecycle, hybrid vector + full-text search), `alohadb_ndarray` (chunked compressed N-d arrays), `alohadb_measure` (units, uncertainty, provenance), `alohadb_tsfunc` (LTTB, resampling, as-of joins, Gorilla codecs).
+- `alohadb_parquet` 1.2: `write_parquet`, `write_arrow`, `arrow_ipc_stream`; `read_parquet` rewritten (it returned no rows for files written by PyArrow).
+- `alohadb_temporal` 1.1: history tables no longer copy the base table's primary key, which made the second update of any row fail. `ALTER EXTENSION alohadb_temporal UPDATE` repairs existing history tables.
+- Core `hnsw` / `ivfflat` index AMs: fixed a crash and silently empty results; index builds are no longer quadratic and can be cancelled. The AMs remain disabled for query planning (exact search is used) until the approximate search itself is reimplemented.
+- Patent-aware design: time-series compression is offered only as value-level codecs, and there is no chunk tiering to object storage or invalidation-based continuous aggregation; bitemporal storage uses one current + one history table; branches are logical overlays. Prior art is cited in each extension's source.
 
 ### 20.1.1 — November 2026
 

@@ -1,0 +1,201 @@
+SET timezone = 'UTC';
+-- irregular samples; note the 35 minute gap between 00:25 and 01:00
+CREATE TEMP TABLE obs (sensor int, ts timestamptz, v float8);
+INSERT INTO obs VALUES
+  (1, '2026-03-01 01:00', 0),
+  (1, '2026-03-01 00:10', 10),
+  (1, '2026-03-01 00:00', 0),
+  (1, '2026-03-01 00:25', 40),
+  (1, '2026-03-01 00:40', NULL),     -- NULL values are ignored
+  (2, '2026-03-01 00:00', 100),
+  (2, '2026-03-01 00:20', 200),
+  (2, '2026-03-01 00:20', 300);      -- duplicate timestamp: last row wins
+-- linear: 0, 10, 30, 34.29, 22.86, 11.43, 0
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes') FROM obs WHERE sensor = 1));
+              ts              |       value        
+------------------------------+--------------------
+ Sun Mar 01 00:00:00 2026 UTC |                  0
+ Sun Mar 01 00:10:00 2026 UTC |                 10
+ Sun Mar 01 00:20:00 2026 UTC |                 30
+ Sun Mar 01 00:30:00 2026 UTC | 34.285714285714285
+ Sun Mar 01 00:40:00 2026 UTC | 22.857142857142858
+ Sun Mar 01 00:50:00 2026 UTC | 11.428571428571427
+ Sun Mar 01 01:00:00 2026 UTC |                  0
+(7 rows)
+
+-- linear with max_gap: no interpolation across the 35 minute gap
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'linear', NULL, '20 minutes')
+                      FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sun Mar 01 00:00:00 2026 UTC |     0
+ Sun Mar 01 00:10:00 2026 UTC |    10
+ Sun Mar 01 00:20:00 2026 UTC |    30
+ Sun Mar 01 00:30:00 2026 UTC |      
+ Sun Mar 01 00:40:00 2026 UTC |      
+ Sun Mar 01 00:50:00 2026 UTC |      
+ Sun Mar 01 01:00:00 2026 UTC |     0
+(7 rows)
+
+-- locf: 0, 10, 10, 40, 40, 40, 0
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'locf') FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sun Mar 01 00:00:00 2026 UTC |     0
+ Sun Mar 01 00:10:00 2026 UTC |    10
+ Sun Mar 01 00:20:00 2026 UTC |    10
+ Sun Mar 01 00:30:00 2026 UTC |    40
+ Sun Mar 01 00:40:00 2026 UTC |    40
+ Sun Mar 01 00:50:00 2026 UTC |    40
+ Sun Mar 01 01:00:00 2026 UTC |     0
+(7 rows)
+
+-- locf, values older than 20 minutes are not carried
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'locf', NULL, '20 minutes')
+                      FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sun Mar 01 00:00:00 2026 UTC |     0
+ Sun Mar 01 00:10:00 2026 UTC |    10
+ Sun Mar 01 00:20:00 2026 UTC |    10
+ Sun Mar 01 00:30:00 2026 UTC |    40
+ Sun Mar 01 00:40:00 2026 UTC |    40
+ Sun Mar 01 00:50:00 2026 UTC |      
+ Sun Mar 01 01:00:00 2026 UTC |     0
+(7 rows)
+
+-- nearest (ties go to the earlier sample): 0, 10, 40, 40, 40, 0, 0
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'nearest') FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sun Mar 01 00:00:00 2026 UTC |     0
+ Sun Mar 01 00:10:00 2026 UTC |    10
+ Sun Mar 01 00:20:00 2026 UTC |    40
+ Sun Mar 01 00:30:00 2026 UTC |    40
+ Sun Mar 01 00:40:00 2026 UTC |    40
+ Sun Mar 01 00:50:00 2026 UTC |     0
+ Sun Mar 01 01:00:00 2026 UTC |     0
+(7 rows)
+
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'nearest', NULL, '8 minutes')
+                      FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sun Mar 01 00:00:00 2026 UTC |     0
+ Sun Mar 01 00:10:00 2026 UTC |    10
+ Sun Mar 01 00:20:00 2026 UTC |    40
+ Sun Mar 01 00:30:00 2026 UTC |    40
+ Sun Mar 01 00:40:00 2026 UTC |      
+ Sun Mar 01 00:50:00 2026 UTC |      
+ Sun Mar 01 01:00:00 2026 UTC |     0
+(7 rows)
+
+-- mean per 30 minute bucket: (0+10+40)/3, empty -> NULL, 0
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '30 minutes', 'mean') FROM obs WHERE sensor = 1));
+              ts              |       value        
+------------------------------+--------------------
+ Sun Mar 01 00:00:00 2026 UTC | 16.666666666666668
+ Sun Mar 01 00:30:00 2026 UTC |                   
+ Sun Mar 01 01:00:00 2026 UTC |                  0
+(3 rows)
+
+-- explicit origin: grid at :05, :15, ... inside [00:00, 01:00]
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '10 minutes', 'linear', '2020-01-01 00:05')
+                      FROM obs WHERE sensor = 1));
+              ts              |       value        
+------------------------------+--------------------
+ Sun Mar 01 00:05:00 2026 UTC |                  5
+ Sun Mar 01 00:15:00 2026 UTC |                 20
+ Sun Mar 01 00:25:00 2026 UTC |                 40
+ Sun Mar 01 00:35:00 2026 UTC | 28.571428571428573
+ Sun Mar 01 00:45:00 2026 UTC | 17.142857142857146
+ Sun Mar 01 00:55:00 2026 UTC |  5.714285714285716
+(6 rows)
+
+-- mean with an origin: buckets start on the origin grid (floor of first sample)
+SELECT * FROM unnest((SELECT ts_resample(ts, v, '20 minutes', 'mean', '2026-03-01 00:05')
+                      FROM obs WHERE sensor = 1));
+              ts              | value 
+------------------------------+-------
+ Sat Feb 28 23:45:00 2026 UTC |     0
+ Sun Mar 01 00:05:00 2026 UTC |    10
+ Sun Mar 01 00:25:00 2026 UTC |    40
+ Sun Mar 01 00:45:00 2026 UTC |     0
+(4 rows)
+
+-- NULL method / origin / max_gap mean the defaults
+SELECT (SELECT ts_resample(ts, v, '10 minutes', NULL, NULL, NULL) FROM obs WHERE sensor = 1) =
+       (SELECT ts_resample(ts, v, '10 minutes') FROM obs WHERE sensor = 1) AS same;
+ same 
+------
+ t
+(1 row)
+
+-- per sensor; duplicate timestamps keep the last row for interpolation,
+-- and all rows count for 'mean'
+SELECT sensor, ts_resample(ts, v, '10 minutes') FROM obs GROUP BY sensor ORDER BY sensor;
+ sensor |                                                                                                                                                               ts_resample                                                                                                                                                               
+--------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      1 | {"(\"Sun Mar 01 00:00:00 2026 UTC\",0)","(\"Sun Mar 01 00:10:00 2026 UTC\",10)","(\"Sun Mar 01 00:20:00 2026 UTC\",30)","(\"Sun Mar 01 00:30:00 2026 UTC\",34.285714285714285)","(\"Sun Mar 01 00:40:00 2026 UTC\",22.857142857142858)","(\"Sun Mar 01 00:50:00 2026 UTC\",11.428571428571427)","(\"Sun Mar 01 01:00:00 2026 UTC\",0)"}
+      2 | {"(\"Sun Mar 01 00:00:00 2026 UTC\",100)","(\"Sun Mar 01 00:10:00 2026 UTC\",200)","(\"Sun Mar 01 00:20:00 2026 UTC\",300)"}
+(2 rows)
+
+SELECT sensor, ts_resample(ts, v, '10 minutes', 'mean') FROM obs GROUP BY sensor ORDER BY sensor;
+ sensor |                                                                                                                                    ts_resample                                                                                                                                    
+--------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      1 | {"(\"Sun Mar 01 00:00:00 2026 UTC\",0)","(\"Sun Mar 01 00:10:00 2026 UTC\",10)","(\"Sun Mar 01 00:20:00 2026 UTC\",40)","(\"Sun Mar 01 00:30:00 2026 UTC\",)","(\"Sun Mar 01 00:40:00 2026 UTC\",)","(\"Sun Mar 01 00:50:00 2026 UTC\",)","(\"Sun Mar 01 01:00:00 2026 UTC\",0)"}
+      2 | {"(\"Sun Mar 01 00:00:00 2026 UTC\",100)","(\"Sun Mar 01 00:10:00 2026 UTC\",)","(\"Sun Mar 01 00:20:00 2026 UTC\",250)"}
+(2 rows)
+
+-- single sample, and a span shorter than one step on an origin grid
+SELECT ts_resample(ts, v, '1 hour') FROM obs WHERE sensor = 1 AND v = 40;
+                ts_resample                
+-------------------------------------------
+ {"(\"Sun Mar 01 00:25:00 2026 UTC\",40)"}
+(1 row)
+
+SELECT ts_resample(ts, v, '1 hour', 'linear', '2026-03-01 00:30') FROM obs WHERE sensor = 2;
+ ts_resample 
+-------------
+ {}
+(1 row)
+
+-- no rows -> NULL
+SELECT ts_resample(ts, v, '1 hour') IS NULL FROM obs WHERE false;
+ ?column? 
+----------
+ t
+(1 row)
+
+-- errors
+SELECT ts_resample(ts, v, '1 month') FROM obs;
+ERROR:  resample step must not contain months or years
+SELECT ts_resample(ts, v, '0 seconds') FROM obs;
+ERROR:  resample step must be positive
+SELECT ts_resample(ts, v, '-1 second') FROM obs;
+ERROR:  resample step must be positive
+SELECT ts_resample(ts, v, NULL) FROM obs;
+ERROR:  resample step must not be NULL
+SELECT ts_resample(ts, v, '1 minute', 'cubic') FROM obs;
+ERROR:  unknown resample method "cubic"
+HINT:  Valid methods are linear, locf, nearest and mean.
+SELECT ts_resample(ts, v, '1 minute', 'linear', NULL, '-1 minute') FROM obs;
+ERROR:  max_gap must not be negative
+SELECT ts_resample(ts, v, '1 minute') FROM (VALUES ('infinity'::timestamptz, 1::float8)) x(ts, v);
+ERROR:  cannot resample infinite timestamps
+SELECT ts_resample(ts, v, '1 microsecond') FROM (VALUES ('2000-01-01'::timestamptz, 1::float8),
+                                                       ('2026-01-01', 2)) x(ts, v);
+ERROR:  resample grid would have 820540800000001 points, more than the maximum of 134217727
+HINT:  Use a larger step.
+-- larger irregular series: grid length and exactness at the samples
+WITH d AS (
+  SELECT '2026-01-01'::timestamptz + make_interval(secs => g * 10 + (g % 3)) AS ts,
+         g::float8 AS v
+  FROM generate_series(0, 999) g
+), r AS (SELECT ts_resample(ts, v, '1 minute') AS a FROM d)
+SELECT cardinality(a), (a[1]).value, (a[cardinality(a)]).ts FROM r;
+ cardinality | value |              ts              
+-------------+-------+------------------------------
+         167 |     0 | Thu Jan 01 02:46:00 2026 UTC
+(1 row)
+

@@ -121,7 +121,7 @@ ivfflat_do_scan(IndexScanDesc scan)
 	}
 
 	/* Verify dimensions */
-	if (so->query->dim != dim)
+	if (so->query != NULL && so->query->dim != dim)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
 				 errmsg("ivfflat index expects vectors with %d dimensions, query has %d",
@@ -133,6 +133,8 @@ ivfflat_do_scan(IndexScanDesc scan)
 
 	/* Determine how many probes to do */
 	nprobes = so->nprobes;
+	if (so->query == NULL)
+		nprobes = num_lists;	/* unordered scan: return every entry */
 	if (nprobes > num_lists)
 		nprobes = num_lists;
 
@@ -166,7 +168,8 @@ ivfflat_do_scan(IndexScanDesc scan)
 				Vector	   *centroid = IvfflatListGetCentroid(list);
 
 				centroid_info[list_idx].list_idx = list_idx;
-				centroid_info[list_idx].distance = so->distfunc(so->query, centroid);
+				centroid_info[list_idx].distance = so->query ?
+					so->distfunc(so->query, centroid) : 0.0;
 				centroid_info[list_idx].first_posting_blkno = list->first_posting_blkno;
 
 				ptr += centry_size;
@@ -215,7 +218,7 @@ ivfflat_do_scan(IndexScanDesc scan)
 				double		dist;
 				IvfflatScanEntry *result;
 
-				dist = so->distfunc(so->query, vec);
+				dist = so->query ? so->distfunc(so->query, vec) : 0.0;
 
 				result = (IvfflatScanEntry *) palloc(sizeof(IvfflatScanEntry));
 				result->heap_tid = entry->heap_tid;
@@ -250,6 +253,17 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	MemoryContext scan_ctx;
 
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
+
+	/*
+	 * Ordering scans return the distance through xs_orderbyvals; the AM must
+	 * allocate these arrays itself (as GiST does).
+	 */
+	if (norderbys > 0)
+	{
+		scan->xs_orderbyvals = palloc0(sizeof(Datum) * norderbys);
+		scan->xs_orderbynulls = palloc(sizeof(bool) * norderbys);
+		memset(scan->xs_orderbynulls, true, sizeof(bool) * norderbys);
+	}
 
 	scan_ctx = AllocSetContextCreate(CurrentMemoryContext,
 									 "IVFFlat scan",
@@ -291,6 +305,8 @@ ivfflatrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
 	 * For an ORDER BY scan, the orderbys array contains scan keys where
 	 * sk_argument is the query vector datum.
 	 */
+	so->query = NULL;			/* no ORDER BY: unordered scan of all entries */
+
 	if (orderbys != NULL && norderbys > 0)
 	{
 		Datum		query_datum;

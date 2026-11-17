@@ -1,0 +1,127 @@
+--
+-- alohadb_lineage on alohadb_bitemporal tables (optional integration)
+--
+CREATE EXTENSION IF NOT EXISTS alohadb_lineage;
+NOTICE:  extension "alohadb_lineage" already exists, skipping
+CREATE EXTENSION alohadb_bitemporal;
+CREATE TABLE fx_rate (
+    ccy        text,
+    rate       numeric NOT NULL,
+    valid_from timestamptz,
+    valid_to   timestamptz,
+    PRIMARY KEY (ccy, valid_from)
+);
+SELECT bitemporal_enable('fx_rate', ARRAY['ccy']);
+ bitemporal_enable 
+-------------------
+ fx_rate_history
+(1 row)
+
+INSERT INTO fx_rate (ccy, rate, valid_from) VALUES
+    ('EUR', 1.10, '2024-01-01 00:00:00+00'),
+    ('GBP', 1.25, '2024-01-01 00:00:00+00');
+SELECT table_name, kind, row_count FROM lineage_snapshot('fx_train', ARRAY['fx_rate'::regclass]);
+ table_name |    kind    | row_count 
+------------+------------+-----------
+ fx_rate    | bitemporal |         2
+(1 row)
+
+-- retroactive correction after the snapshot
+SELECT bitemporal_update('fx_rate', '{"ccy": "EUR"}', '2024-02-01 00:00:00+00', NULL, '{"rate": 1.12}');
+ bitemporal_update 
+-------------------
+                 1
+(1 row)
+
+SELECT ccy, rate, valid_from AT TIME ZONE 'UTC' AS vf, valid_to AT TIME ZONE 'UTC' AS vt
+  FROM fx_rate ORDER BY ccy, valid_from;
+ ccy | rate |            vf            |            vt            
+-----+------+--------------------------+--------------------------
+ EUR | 1.10 | Mon Jan 01 00:00:00 2024 | Thu Feb 01 00:00:00 2024
+ EUR | 1.12 | Thu Feb 01 00:00:00 2024 | infinity
+ GBP | 1.25 | Mon Jan 01 00:00:00 2024 | infinity
+(3 rows)
+
+SELECT table_name, row_count_then, row_count_now, matches FROM lineage_verify('fx_train');
+ table_name | row_count_then | row_count_now | matches 
+------------+----------------+---------------+---------
+ fx_rate    |              2 |             2 | t
+(1 row)
+
+SELECT ccy, rate, valid_from AT TIME ZONE 'UTC' AS vf, valid_to AT TIME ZONE 'UTC' AS vt
+  FROM lineage_read_snapshot(NULL::fx_rate, 'fx_train') ORDER BY ccy, valid_from;
+ ccy | rate |            vf            |    vt    
+-----+------+--------------------------+----------
+ EUR | 1.10 | Mon Jan 01 00:00:00 2024 | infinity
+ GBP | 1.25 | Mon Jan 01 00:00:00 2024 | infinity
+(2 rows)
+
+-- branch of a bitemporal table; merge goes through the bitemporal triggers
+SELECT lineage_branch_create('whatif', 'fx_rate');
+ lineage_branch_create 
+-----------------------
+ fx_rate__whatif
+(1 row)
+
+UPDATE fx_rate__whatif SET rate = 1.30 WHERE ccy = 'GBP';
+INSERT INTO fx_rate__whatif (ccy, rate, valid_from) VALUES ('JPY', 0.0068, '2024-01-01 00:00:00+00');
+SELECT ccy, rate FROM fx_rate__whatif ORDER BY ccy, valid_from;
+ ccy |  rate  
+-----+--------
+ EUR |   1.10
+ EUR |   1.12
+ GBP |   1.30
+ JPY | 0.0068
+(4 rows)
+
+SELECT ccy, rate FROM fx_rate ORDER BY ccy, valid_from;
+ ccy | rate 
+-----+------
+ EUR | 1.10
+ EUR | 1.12
+ GBP | 1.25
+(3 rows)
+
+SELECT change, key - 'valid_from' AS key, branch_row ->> 'rate' AS rate
+  FROM lineage_branch_diff('whatif', 'fx_rate');
+ change  |      key       |  rate  
+---------+----------------+--------
+ added   | {"ccy": "JPY"} | 0.0068
+ changed | {"ccy": "GBP"} | 1.30
+(2 rows)
+
+SELECT * FROM lineage_branch_merge('whatif', 'fx_rate');
+ inserted | updated | deleted 
+----------+---------+---------
+        1 |       1 |       0
+(1 row)
+
+SELECT ccy, rate FROM fx_rate ORDER BY ccy, valid_from;
+ ccy |  rate  
+-----+--------
+ EUR |   1.10
+ EUR |   1.12
+ GBP |   1.30
+ JPY | 0.0068
+(4 rows)
+
+-- the superseded GBP version is in the bitemporal history
+SELECT ccy, rate FROM fx_rate_history WHERE ccy = 'GBP';
+ ccy | rate 
+-----+------
+ GBP | 1.25
+(1 row)
+
+SELECT lineage_branch_drop('whatif', 'fx_rate');
+ lineage_branch_drop 
+---------------------
+ 
+(1 row)
+
+-- snapshot still reproducible
+SELECT table_name, matches FROM lineage_verify('fx_train');
+ table_name | matches 
+------------+---------
+ fx_rate    | t
+(1 row)
+

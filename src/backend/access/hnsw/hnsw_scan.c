@@ -397,6 +397,17 @@ hnswbeginscan(Relation index, int nkeys, int norderbys)
 
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
+	/*
+	 * Ordering scans return the distance through xs_orderbyvals; the AM must
+	 * allocate these arrays itself (as GiST does).
+	 */
+	if (norderbys > 0)
+	{
+		scan->xs_orderbyvals = palloc0(sizeof(Datum) * norderbys);
+		scan->xs_orderbynulls = palloc(sizeof(bool) * norderbys);
+		memset(scan->xs_orderbynulls, true, sizeof(bool) * norderbys);
+	}
+
 	so = (HnswScanOpaque) palloc0(sizeof(HnswScanOpaqueData));
 	so->queryVec = NULL;
 	so->strategy = 0;
@@ -431,6 +442,7 @@ hnswrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
 
 	/* Reset the memory context */
 	MemoryContextReset(so->scanCtx);
+	so->queryVec = NULL;		/* lived in scanCtx */
 
 	if (orderbys != NULL && scan->numberOfOrderBys > 0)
 	{
@@ -445,7 +457,7 @@ hnswrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
 		 * The sk_argument is the query vector datum.
 		 */
 		if (scan->numberOfOrderBys > 0 &&
-			!scan->orderByData[0].sk_flags)
+			!(scan->orderByData[0].sk_flags & SK_ISNULL))
 		{
 			Datum		queryDatum = scan->orderByData[0].sk_argument;
 			Vector	   *queryVec = DatumGetVector(queryDatum);
@@ -475,6 +487,35 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 	 * On the first call, perform the actual HNSW search and populate
 	 * the result list.
 	 */
+	if (so->firstCall)
+	{
+		if (scan->numberOfOrderBys == 0)
+		{
+			/*
+			 * Unordered scan (e.g. a partial index whose predicate matches
+			 * the query's WHERE clause): return every indexed element and
+			 * let the executor apply the quals.
+			 */
+			MemoryContext oldCtx = MemoryContextSwitchTo(so->scanCtx);
+			List	   *elements = hnsw_scan_load_elements(scan->indexRelation,
+														   so->scanCtx);
+			ListCell   *lc;
+
+			pgstat_count_index_scan(scan->indexRelation);
+			so->resultList = NIL;
+			foreach(lc, elements)
+			{
+				HnswCandidate *cand = palloc0(sizeof(HnswCandidate));
+
+				cand->element = (HnswElement *) lfirst(lc);
+				cand->distance = 0;
+				so->resultList = lappend(so->resultList, cand);
+			}
+			MemoryContextSwitchTo(oldCtx);
+			so->firstCall = false;
+		}
+	}
+
 	if (so->firstCall)
 	{
 		/* Must have a query vector */

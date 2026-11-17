@@ -162,7 +162,7 @@ temporal_get_history_relname(Oid relid)
  *
  * Enable system versioning on the specified table:
  *   1. Add row_start and row_end columns
- *   2. Create history table (LIKE ... INCLUDING ALL)
+ *   2. Create history table (LIKE ... columns/defaults only, no keys)
  *   3. Create index on history table (row_start, row_end)
  *   4. Install the versioning trigger
  *   5. Register in alohadb_temporal_tables
@@ -204,11 +204,19 @@ alohadb_enable_system_versioning(PG_FUNCTION_ARGS)
 				 errmsg("failed to add temporal columns to %s", qualified_name)));
 
 	/*
-	 * Step 2: Create the history table using LIKE ... INCLUDING ALL.
+	 * Step 2: Create the history table with the base table's columns.
+	 *
+	 * Copy defaults, storage, compression and comments only.  Indexes and
+	 * constraints are deliberately NOT copied: the history table holds many
+	 * versions of the same key, so a copied PRIMARY KEY / UNIQUE constraint
+	 * would make the second UPDATE of any row fail.  Identity and generated
+	 * columns become plain columns so that archived values can be inserted
+	 * verbatim.
 	 */
 	resetStringInfo(&buf);
 	appendStringInfo(&buf,
-					 "CREATE TABLE %s (LIKE %s INCLUDING ALL)",
+					 "CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING STORAGE "
+					 "INCLUDING COMPRESSION INCLUDING COMMENTS)",
 					 history_name,
 					 qualified_name);
 

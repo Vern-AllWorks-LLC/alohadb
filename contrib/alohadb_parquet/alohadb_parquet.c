@@ -4,7 +4,9 @@
  *	  Main entry point for the alohadb_parquet extension.
  *
  *	  Provides GUC configuration and path validation for the
- *	  Parquet, CSV, and JSON file reader functions.
+ *	  Parquet, CSV, and JSON file reader functions and the Parquet /
+ *	  Arrow IPC writer functions (write_parquet, write_arrow,
+ *	  arrow_ipc_stream; version 1.2).
  *
  * Copyright (c) 2025, AlohaDB
  *
@@ -26,7 +28,7 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "alohadb_parquet",
-					.version = "1.0"
+					.version = "1.2"
 );
 
 /* GUC variable */
@@ -36,7 +38,7 @@ void
 _PG_init(void)
 {
 	DefineCustomStringVariable("alohadb.parquet_allowed_paths",
-							   "Comma-separated list of allowed directory paths for file reading",
+							   "Comma-separated list of directories that alohadb_parquet may read from and write to",
 							   NULL,
 							   &alohadb_parquet_allowed_paths,
 							   "/tmp",

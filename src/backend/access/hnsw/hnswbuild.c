@@ -244,7 +244,7 @@ hnsw_build_insert_element(HnswBuildState *buildstate, Vector *vec,
  * Returns the block number and offset where it was stored.
  */
 static void
-hnsw_write_element(Relation index, HnswElement *element,
+hnsw_write_element(Relation index, BlockNumber *hint, HnswElement *element,
 				   BlockNumber *outBlkno, OffsetNumber *outOffset)
 {
 	Buffer		buf;
@@ -270,10 +270,12 @@ hnsw_write_element(Relation index, HnswElement *element,
 	 * Try to find a page with enough space. We scan from HNSW_HEAD_BLKNO
 	 * forward looking for element pages.
 	 */
-	blkno = HNSW_HEAD_BLKNO;
+	blkno = Max(*hint, HNSW_HEAD_BLKNO);
 
 	for (;;)
 	{
+		CHECK_FOR_INTERRUPTS();
+
 		/*
 		 * Try to extend or read an existing page
 		 */
@@ -335,6 +337,7 @@ hnsw_write_element(Relation index, HnswElement *element,
 
 	*outBlkno = BufferGetBlockNumber(buf);
 	*outOffset = off;
+	*hint = *outBlkno;
 
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(buf);
@@ -348,7 +351,7 @@ hnsw_write_element(Relation index, HnswElement *element,
  * Write neighbor data for an element to the index.
  */
 static void
-hnsw_write_neighbors(Relation index, HnswElement *element)
+hnsw_write_neighbors(Relation index, BlockNumber *hint, HnswElement *element)
 {
 	int			layer;
 
@@ -376,8 +379,14 @@ hnsw_write_neighbors(Relation index, HnswElement *element)
 			ntup.layer = layer;
 			ntup.distance = cand->distance;
 
-			/* Find a neighbor page with space */
-			curBlkno = HNSW_HEAD_BLKNO;
+			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * Find a neighbor page with space.  During a build pages are
+			 * only ever appended, so start from the last page used instead
+			 * of rescanning the whole index (which made builds quadratic).
+			 */
+			curBlkno = Max(*hint, HNSW_HEAD_BLKNO);
 			while (curBlkno < RelationGetNumberOfBlocks(index))
 			{
 				buf = ReadBufferExtended(index, MAIN_FORKNUM, curBlkno,
@@ -422,6 +431,7 @@ hnsw_write_neighbors(Relation index, HnswElement *element)
 							  InvalidOffsetNumber, false, false);
 			if (off == InvalidOffsetNumber)
 				elog(ERROR, "failed to add neighbor to HNSW index page");
+			*hint = BufferGetBlockNumber(buf);
 
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(buf);
@@ -449,6 +459,9 @@ hnsw_flush_graph(Relation index, HnswBuildState *buildstate)
 	GenericXLogState *state;
 	HnswMetaPageData *metadata;
 
+	BlockNumber elementHint = HNSW_HEAD_BLKNO;
+	BlockNumber neighborHint = HNSW_HEAD_BLKNO;
+
 	/* Write all elements to disk */
 	foreach(lc, buildstate->elements)
 	{
@@ -456,7 +469,7 @@ hnsw_flush_graph(Relation index, HnswBuildState *buildstate)
 		BlockNumber blkno;
 		OffsetNumber offset;
 
-		hnsw_write_element(index, element, &blkno, &offset);
+		hnsw_write_element(index, &elementHint, element, &blkno, &offset);
 	}
 
 	/* Write all neighbor lists */
@@ -464,7 +477,7 @@ hnsw_flush_graph(Relation index, HnswBuildState *buildstate)
 	{
 		HnswElement *element = (HnswElement *) lfirst(lc);
 
-		hnsw_write_neighbors(index, element);
+		hnsw_write_neighbors(index, &neighborHint, element);
 	}
 
 	/* Update metapage */

@@ -19,6 +19,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "utils/float.h"
 #include "utils/selfuncs.h"
 
 #include "ivfflat.h"
@@ -52,6 +53,21 @@ ivfflatcostestimate(PlannerInfo *root, IndexPath *path,
 	double		tuples_scanned;
 	Cost		startup_cost;
 	Cost		run_cost;
+
+	/*
+	 * These indexes can only return tuples ordered by distance; a scan
+	 * without an ORDER BY operator would return nothing.  Make such paths
+	 * prohibitively expensive so the planner never picks them.
+	 */
+	if (path->indexorderbys == NIL)
+	{
+		*indexStartupCost = get_float8_infinity();
+		*indexTotalCost = get_float8_infinity();
+		*indexSelectivity = 0;
+		*indexCorrelation = 0;
+		*indexPages = 0;
+		return;
+	}
 
 	/*
 	 * Get the lists parameter from reloptions.  If not set, use the default.

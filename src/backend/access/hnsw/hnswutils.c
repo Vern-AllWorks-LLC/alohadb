@@ -81,7 +81,16 @@ hnswhandler(PG_FUNCTION_ARGS)
 	amroutine->amcanbackward = false;
 	amroutine->amcanunique = false;
 	amroutine->amcanmulticol = false;
-	amroutine->amoptionalkey = true;
+	/*
+	 * false: the planner never builds scans of this index without a WHERE
+	 * key, and the AM has no WHERE-able operators, so the index is never
+	 * used by queries.  The current implementation cannot serve ordered
+	 * (nearest-neighbour) or index-only scans correctly, and its ordering
+	 * operators deliberately have no sort family.  A working implementation
+	 * must set this back to true (ORDER BY-only scans need it) and give the
+	 * ordering operators amopsortfamily btree/float_ops.
+	 */
+	amroutine->amoptionalkey = false;
 	amroutine->amsearcharray = false;
 	amroutine->amsearchnulls = false;
 	amroutine->amstorage = true;
