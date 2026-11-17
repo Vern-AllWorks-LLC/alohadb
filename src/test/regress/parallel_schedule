@@ -135,6 +135,9 @@ test: partition_join partition_prune reloptions hash_part indexing partition_agg
 # ----------
 test: compression compression_pglz
 
+# hnsw / ivfflat vector indexes (ported from pgvector)
+test: vector_index
+
 # event_trigger depends on create_am and cannot run concurrently with
 # any test that runs DDL
 # oidjoins is read-only, though, and should run late for best coverage

@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([AlohaDB], [20.1], [support@opencan.ai], [], [https://opencan.ai/])
+AC_INIT([AlohaDB], [20.2], [support@opencan.ai], [], [https://opencan.ai/])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not

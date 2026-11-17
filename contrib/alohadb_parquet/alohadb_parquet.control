@@ -1,4 +1,4 @@
-comment = 'AlohaDB Parquet, CSV, and JSON file reader'
-default_version = '1.1'
+comment = 'AlohaDB Parquet, CSV, and JSON file reader; Parquet and Arrow IPC writer'
+default_version = '1.2'
 module_pathname = '$libdir/alohadb_parquet'
 relocatable = false

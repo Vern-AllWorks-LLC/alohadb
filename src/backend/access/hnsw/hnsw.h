@@ -1,304 +1,539 @@
-/*-------------------------------------------------------------------------
- *
- * hnsw.h
- *	  Header for the HNSW (Hierarchical Navigable Small World) index
- *	  access method.
- *
- * Copyright (c) 2025, AlohaDB Project
- *
+/*
  * src/backend/access/hnsw/hnsw.h
  *
- *-------------------------------------------------------------------------
+ * Ported from pgvector 0.8.7 (https://github.com/pgvector/pgvector),
+ * released under the PostgreSQL License:
+ *   Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *   Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ * Adapted for the AlohaDB core: built-in access method for the core `vector`
+ * type (halfvec/sparsevec/bit opclasses removed), GUCs defined in
+ * guc_tables.c, parallel build entry points registered in parallel.c, and a
+ * built-in LWLock tranche.  Version-conditional code resolved for the
+ * PostgreSQL 18 code base.
  */
 #ifndef HNSW_H
 #define HNSW_H
 
-#include "access/amapi.h"
-#include "access/generic_xlog.h"
-#include "access/itup.h"
-#include "access/reloptions.h"
-#include "catalog/index.h"
+#include "postgres.h"
+
+#include <math.h>
+
+#include "access/genam.h"
+#include "access/parallel.h"
 #include "lib/pairingheap.h"
 #include "nodes/execnodes.h"
-#include "nodes/pathnodes.h"
-#include "storage/bufmgr.h"
-#include "storage/lock.h"
+#include "port.h"				/* for random() */
+#include "storage/bufpage.h"
+#include "storage/condition_variable.h"
+#include "storage/lwlock.h"
+#include "storage/s_lock.h"
+#include "utils/relptr.h"
+#include "utils/sampling.h"
 #include "utils/vector.h"
 
-/*
- * Constants
- */
-#define HNSW_MAX_DIM			16384
-#define HNSW_DEFAULT_M			16
-#define HNSW_DEFAULT_EF_CONSTRUCTION 64
-#define HNSW_MAX_LEVEL			30
+#include "storage/shmem.h"		/* for add_size()/mul_size() in some versions */
+
+#ifdef HNSW_BENCH
+#include "portability/instr_time.h"
+#endif
+
+
+#define HNSW_MAX_DIM 2000
+#define HNSW_MAX_NNZ 1000
+
+/* Support functions */
+#define HNSW_DISTANCE_PROC 1
+#define HNSW_NORM_PROC 2
+#define HNSW_TYPE_INFO_PROC 3
+
+#define HNSW_VERSION	1
+#define HNSW_MAGIC_NUMBER 0xA953A953
+#define HNSW_PAGE_ID	0xFF90
+
+/* Preserved page numbers */
+#define HNSW_METAPAGE_BLKNO	0
+#define HNSW_HEAD_BLKNO		1	/* first element page */
+
+/* Must correspond to page numbers since page lock is used */
+#define HNSW_UPDATE_LOCK 	0
+#define HNSW_SCAN_LOCK		1
+
+/* HNSW parameters */
+#define HNSW_DEFAULT_M	16
+#define HNSW_MIN_M	2
+#define HNSW_MAX_M		100
+#define HNSW_DEFAULT_EF_CONSTRUCTION	64
+#define HNSW_MIN_EF_CONSTRUCTION	4
+#define HNSW_MAX_EF_CONSTRUCTION		1000
 #define HNSW_DEFAULT_EF_SEARCH	40
+#define HNSW_MIN_EF_SEARCH		1
+#define HNSW_MAX_EF_SEARCH		1000
 
-/* Strategy numbers matching vector.h */
-#define HNSW_L2_STRATEGY		1	/* <-> L2 distance */
-#define HNSW_COSINE_STRATEGY	2	/* <=> cosine distance */
-#define HNSW_IP_STRATEGY		3	/* <#> inner product distance */
+/* Tuple types */
+#define HNSW_ELEMENT_TUPLE_TYPE  1
+#define HNSW_NEIGHBOR_TUPLE_TYPE 2
 
-/* Support function numbers */
-#define HNSW_DISTANCE_PROC		1
-#define HNSW_NUM_PROCS			1
+/* Make graph robust against non-HOT updates */
+#define HNSW_HEAPTIDS 10
 
-/*
- * Page layout constants.
- * Metapage is always block 0.  Element pages follow, then neighbor list pages.
- */
-#define HNSW_METAPAGE_BLKNO		0
-#define HNSW_HEAD_BLKNO			1	/* first data page */
+#define HNSW_UPDATE_ENTRY_GREATER 1
+#define HNSW_UPDATE_ENTRY_ALWAYS 2
 
-#define HNSW_PAGE_ID			0xFF90	/* for PageSetSpecial identification */
+/* Build phases */
+/* PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE is 1 */
+#define PROGRESS_HNSW_PHASE_LOAD		2
 
-/* Page types stored in HnswPageOpaqueData.flags */
-#define HNSW_PAGE_META			(1 << 0)
-#define HNSW_PAGE_ELEMENT		(1 << 1)
-#define HNSW_PAGE_NEIGHBOR		(1 << 2)
+#define HNSW_MAX_SIZE (BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(HnswPageOpaqueData)) - sizeof(ItemIdData))
+#define HNSW_TUPLE_ALLOC_SIZE BLCKSZ
 
-/*
- * Page opaque data, stored at the end of each page.
- */
-typedef struct HnswPageOpaqueData
+#define HNSW_ELEMENT_TUPLE_SIZE(size)	MAXALIGN(add_size(offsetof(HnswElementTupleData, data), size))
+#define HNSW_NEIGHBOR_TUPLE_SIZE(level, m)	MAXALIGN(add_size(offsetof(HnswNeighborTupleData, indextids), mul_size(sizeof(ItemPointerData), mul_size(add_size(level, 2), m))))
+
+#define HNSW_NEIGHBOR_ARRAY_SIZE(lm)	add_size(offsetof(HnswNeighborArray, items), mul_size(sizeof(HnswCandidate), lm))
+
+#define HnswPageGetOpaque(page)	((HnswPageOpaque) PageGetSpecialPointer(page))
+#define HnswPageGetMeta(page)	((HnswMetaPageData *) PageGetContents(page))
+
+#ifdef HNSW_BENCH
+#define HnswBench(name, code) \
+	do { \
+		instr_time	start; \
+		instr_time	duration; \
+		INSTR_TIME_SET_CURRENT(start); \
+		(code); \
+		INSTR_TIME_SET_CURRENT(duration); \
+		INSTR_TIME_SUBTRACT(duration, start); \
+		elog(INFO, "%s: %.3f ms", name, INSTR_TIME_GET_MILLISEC(duration)); \
+	} while (0)
+#else
+#define HnswBench(name, code) (code)
+#endif
+
+#define RandomDouble() pg_prng_double(&pg_global_prng_state)
+#define SeedRandom(seed) pg_prng_seed(&pg_global_prng_state, seed)
+
+
+#define palloc_array_checked(type, count) ((type *) palloc(mul_size(sizeof(type), count)))
+
+#define HnswIsElementTuple(tup) ((tup)->type == HNSW_ELEMENT_TUPLE_TYPE)
+#define HnswIsNeighborTuple(tup) ((tup)->type == HNSW_NEIGHBOR_TUPLE_TYPE)
+
+/* 2 * M connections for ground layer */
+#define HnswGetLayerM(m, layer) (layer == 0 ? (m) * 2 : (m))
+
+/* Optimal ML from paper */
+#define HnswGetMl(m) (1 / log(m))
+
+/* Ensure fits on page and in uint8 */
+#define HnswGetMaxLevel(m) Min(((BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(HnswPageOpaqueData)) - offsetof(HnswNeighborTupleData, indextids) - sizeof(ItemIdData)) / (sizeof(ItemPointerData)) / (m)) - 2, 63)
+
+#define HnswGetSearchCandidate(membername, ptr) pairingheap_container(HnswSearchCandidate, membername, ptr)
+#define HnswGetSearchCandidateConst(membername, ptr) pairingheap_const_container(HnswSearchCandidate, membername, ptr)
+
+#define HnswGetValue(base, element) PointerGetDatum(HnswPtrAccess(base, (element)->value))
+
+
+/* Pointer macros */
+#define HnswPtrAccess(base, hp) ((base) == NULL ? (hp).ptr : relptr_access(base, (hp).relptr))
+#define HnswPtrStore(base, hp, value) ((base) == NULL ? (void) ((hp).ptr = (value)) : (void) relptr_store(base, (hp).relptr, value))
+#define HnswPtrIsNull(base, hp) ((base) == NULL ? (hp).ptr == NULL : relptr_is_null((hp).relptr))
+#define HnswPtrEqual(base, hp1, hp2) ((base) == NULL ? (hp1).ptr == (hp2).ptr : relptr_offset((hp1).relptr) == relptr_offset((hp2).relptr))
+
+/* For code paths dedicated to each type */
+#define HnswPtrPointer(hp) (hp).ptr
+#define HnswPtrOffset(hp) relptr_offset((hp).relptr)
+
+/* Variables (GUCs are defined in guc_tables.c) */
+#include "access/hnsw_guc.h"
+#include "storage/lwlock.h"
+
+#define hnsw_lock_tranche_id LWTRANCHE_HNSW_BUILD
+
+typedef struct HnswElementData HnswElementData;
+typedef struct HnswNeighborArray HnswNeighborArray;
+
+#define HnswPtrDeclare(type, relptrtype, ptrtype) \
+	relptr_declare(type, relptrtype); \
+	typedef union { type *ptr; relptrtype relptr; } ptrtype
+
+/* Pointers that can be absolute or relative */
+/* Use char for DatumPtr so works with Pointer */
+HnswPtrDeclare(HnswElementData, HnswElementRelptr, HnswElementPtr);
+HnswPtrDeclare(HnswNeighborArray, HnswNeighborArrayRelptr, HnswNeighborArrayPtr);
+HnswPtrDeclare(HnswNeighborArrayPtr, HnswNeighborsRelptr, HnswNeighborsPtr);
+HnswPtrDeclare(char, DatumRelptr, DatumPtr);
+
+struct HnswElementData
 {
-	BlockNumber nextblkno;		/* next page of the same type, or InvalidBlockNumber */
-	uint16		flags;			/* page type flags */
-	uint16		unused;			/* padding */
-} HnswPageOpaqueData;
+	HnswElementPtr next;
+	ItemPointerData heaptids[HNSW_HEAPTIDS];
+	uint8		heaptidsLength;
+	uint8		level;
+	uint8		deleted;
+	uint8		version;
+	uint32		hash;
+	HnswNeighborsPtr neighbors;
+	BlockNumber blkno;
+	OffsetNumber offno;
+	OffsetNumber neighborOffno;
+	BlockNumber neighborPage;
+	DatumPtr	value;
+	LWLock		lock;
+};
 
-typedef HnswPageOpaqueData *HnswPageOpaque;
+typedef HnswElementData * HnswElement;
 
-#define HnswPageGetOpaque(page) \
-	((HnswPageOpaque) PageGetSpecialPointer(page))
-
-/*
- * Metapage data, stored on page 0.
- */
-typedef struct HnswMetaPageData
-{
-	uint32		magicNumber;	/* magic number for validation */
-	BlockNumber entryBlkno;		/* block of the entry point element */
-	OffsetNumber entryOffset;	/* offset of the entry point element */
-	uint16		entryLevel;		/* level of the entry point */
-	int32		maxLevel;		/* current maximum level in the graph */
-	int64		elementCount;	/* total number of elements */
-	int32		m;				/* max connections per layer */
-	int32		efConstruction;	/* ef parameter used during construction */
-	int32		dimensions;		/* vector dimensionality */
-} HnswMetaPageData;
-
-#define HNSW_MAGIC_NUMBER		0x484E5357	/* "HNSW" */
-
-/*
- * Each element stored in the index.  This is the on-disk format for element
- * tuples stored on HNSW_PAGE_ELEMENT pages.
- *
- * The element contains the heap TID, the level assigned to this element,
- * the number of dimensions, and the vector data.  Neighbor lists are stored
- * separately on HNSW_PAGE_NEIGHBOR pages.
- */
-typedef struct HnswElementTupleData
-{
-	ItemPointerData heaptid;	/* heap tuple identifier */
-	int16		level;			/* number of layers this element participates in */
-	int16		dim;			/* vector dimensionality */
-	/* neighbor list pointers: one (blkno, offset) pair per layer */
-	BlockNumber neighborPage;	/* first neighbor page for this element */
-	OffsetNumber neighborOffset;	/* offset on that page */
-	uint16		neighborCount;	/* total neighbor slots used across all layers */
-	float		vec[FLEXIBLE_ARRAY_MEMBER];	/* vector data */
-} HnswElementTupleData;
-
-typedef HnswElementTupleData *HnswElementTuple;
-
-#define HNSW_ELEMENT_TUPLE_SIZE(dim) \
-	(offsetof(HnswElementTupleData, vec) + sizeof(float) * (dim))
-
-/*
- * A single neighbor entry, stored on HNSW_PAGE_NEIGHBOR pages.
- * Each entry records a directed edge: source element -> neighbor element,
- * along with the layer and pre-computed distance.
- */
-typedef struct HnswNeighborTupleData
-{
-	ItemPointerData heaptid;		/* heap TID of the neighbor element */
-	BlockNumber srcBlkno;			/* block number of the source element */
-	OffsetNumber srcOffset;			/* offset of the source element */
-	BlockNumber elementBlkno;		/* block number of the neighbor (target) element */
-	OffsetNumber elementOffset;		/* offset of the neighbor (target) element */
-	uint16		layer;				/* which layer this neighbor connection is on */
-	float		distance;			/* pre-computed distance */
-} HnswNeighborTupleData;
-
-typedef HnswNeighborTupleData *HnswNeighborTuple;
-
-/*
- * In-memory representation of an HNSW element, used during build and scan.
- */
-typedef struct HnswElement
-{
-	ItemPointerData heaptid;	/* heap tuple ID */
-	BlockNumber blkno;			/* index page where element is stored */
-	OffsetNumber offset;		/* offset on that page */
-	int			level;			/* assigned level */
-	int			dim;			/* dimensionality */
-	float	   *vec;			/* vector data (palloc'd) */
-
-	/* Neighbor lists: neighbors[i] is the list for layer i */
-	List	  **neighbors;		/* array of Lists of HnswCandidate* */
-} HnswElement;
-
-/*
- * A candidate during search: element pointer + distance.
- */
 typedef struct HnswCandidate
 {
-	HnswElement *element;
+	HnswElementPtr element;
 	float		distance;
-	pairingheap_node ph_node;	/* for use in pairing heap */
-} HnswCandidate;
+	bool		closer;
+}			HnswCandidate;
 
-/*
- * HNSW reloptions
- */
+struct HnswNeighborArray
+{
+	int			length;
+	bool		closerSet;
+	HnswCandidate items[FLEXIBLE_ARRAY_MEMBER];
+};
+
+typedef struct HnswSearchCandidate
+{
+	pairingheap_node c_node;
+	pairingheap_node w_node;
+	HnswElementPtr element;
+	double		distance;
+}			HnswSearchCandidate;
+
+/* HNSW index options */
 typedef struct HnswOptions
 {
-	int32		vl_len_;		/* varlena header (do not touch directly) */
-	int			m;				/* max connections per layer */
-	int			efConstruction;	/* ef during construction */
-} HnswOptions;
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	int			m;				/* number of connections */
+	int			efConstruction; /* size of dynamic candidate list */
+}			HnswOptions;
 
-#define HnswGetM(relation) \
-	((relation)->rd_options ? \
-	 ((HnswOptions *) (relation)->rd_options)->m : \
-	 HNSW_DEFAULT_M)
+typedef struct HnswGraph
+{
+	/* Graph state */
+	slock_t		lock;
+	HnswElementPtr head;
+	double		indtuples;
 
-#define HnswGetEfConstruction(relation) \
-	((relation)->rd_options ? \
-	 ((HnswOptions *) (relation)->rd_options)->efConstruction : \
-	 HNSW_DEFAULT_EF_CONSTRUCTION)
+	/* Entry state */
+	LWLock		entryLock;
+	LWLock		entryWaitLock;
+	HnswElementPtr entryPoint;
 
-/*
- * Build state, used during index construction.
- */
+	/* Allocations state */
+	LWLock		allocatorLock;
+	Size		memoryUsed;
+	Size		memoryTotal;
+
+	/* Flushed state */
+	LWLock		flushLock;
+	bool		flushed;
+}			HnswGraph;
+
+typedef struct HnswShared
+{
+	/* Immutable state */
+	Oid			heaprelid;
+	Oid			indexrelid;
+	bool		isconcurrent;
+
+	/* Worker progress */
+	ConditionVariable workersdonecv;
+
+	/* Mutex for mutable state */
+	slock_t		mutex;
+
+	/* Mutable state */
+	int			nparticipantsdone;
+	double		reltuples;
+	HnswGraph	graphData;
+}			HnswShared;
+
+#define ParallelTableScanFromHnswShared(shared) \
+	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(HnswShared)))
+
+typedef struct HnswLeader
+{
+	ParallelContext *pcxt;
+	int			nparticipanttuplesorts;
+	HnswShared *hnswshared;
+	Snapshot	snapshot;
+	char	   *hnswarea;
+}			HnswLeader;
+
+typedef struct HnswAllocator
+{
+	void	   *(*alloc) (Size size, void *state);
+	void	   *state;
+}			HnswAllocator;
+
+typedef struct HnswTypeInfo
+{
+	int			maxDimensions;
+	Datum		(*dimensions) (PG_FUNCTION_ARGS);
+	Datum		(*normalize) (PG_FUNCTION_ARGS);
+	void		(*checkValue) (Pointer v);
+}			HnswTypeInfo;
+
+typedef struct HnswSupport
+{
+	FmgrInfo   *procinfo;
+	FmgrInfo   *normprocinfo;
+	Oid			collation;
+}			HnswSupport;
+
+typedef struct HnswQuery
+{
+	Datum		value;
+}			HnswQuery;
+
 typedef struct HnswBuildState
 {
+	/* Info */
 	Relation	heap;
 	Relation	index;
 	IndexInfo  *indexInfo;
+	ForkNumber	forkNum;
+	const		HnswTypeInfo *typeInfo;
 
-	/* Build parameters */
-	int			m;				/* max connections per layer */
-	int			efConstruction;	/* ef during construction */
-	int			dimensions;		/* vector dimensionality (set from first tuple) */
-	double		ml;				/* level generation factor: 1/ln(m) */
+	/* Settings */
+	int			dimensions;
+	int			m;
+	int			efConstruction;
 
-	/* Graph state */
-	HnswElement *entryPoint;	/* current entry point */
-	int			maxLevel;		/* current maximum level */
-	List	   *elements;		/* list of all HnswElement* inserted so far */
-	int64		elementCount;	/* total elements */
+	/* Statistics */
+	double		indtuples;
+	double		reltuples;
 
-	/* Memory management */
-	MemoryContext tmpCtx;		/* per-tuple context */
-	MemoryContext buildCtx;		/* long-lived build context */
+	/* Support functions */
+	HnswSupport support;
 
-	/* Flush state */
-	int			flushedCount;	/* how many elements already written to disk */
-} HnswBuildState;
+	/* Variables */
+	HnswGraph	graphData;
+	HnswGraph  *graph;
+	double		ml;
+	int			maxLevel;
 
-/*
- * Scan state
- */
+	/* Memory */
+	MemoryContext graphCtx;
+	MemoryContext tmpCtx;
+	HnswAllocator allocator;
+
+	/* Parallel builds */
+	HnswLeader *hnswleader;
+	HnswShared *hnswshared;
+	char	   *hnswarea;
+}			HnswBuildState;
+
+typedef struct HnswMetaPageData
+{
+	uint32		magicNumber;
+	uint32		version;
+	uint32		dimensions;
+	uint16		m;
+	uint16		efConstruction;
+	BlockNumber entryBlkno;
+	OffsetNumber entryOffno;
+	int16		entryLevel;
+	BlockNumber insertPage;
+}			HnswMetaPageData;
+
+typedef HnswMetaPageData * HnswMetaPage;
+
+typedef struct HnswPageOpaqueData
+{
+	BlockNumber nextblkno;
+	uint16		unused;
+	uint16		page_id;		/* for identification of HNSW indexes */
+}			HnswPageOpaqueData;
+
+typedef HnswPageOpaqueData * HnswPageOpaque;
+
+typedef struct HnswElementTupleData
+{
+	uint8		type;
+	uint8		level;
+	uint8		deleted;
+	uint8		version;
+	ItemPointerData heaptids[HNSW_HEAPTIDS];
+	ItemPointerData neighbortid;
+	uint16		unused;
+	Vector		data;
+}			HnswElementTupleData;
+
+typedef HnswElementTupleData * HnswElementTuple;
+
+typedef struct HnswNeighborTupleData
+{
+	uint8		type;
+	uint8		version;
+	uint16		count;
+	ItemPointerData indextids[FLEXIBLE_ARRAY_MEMBER];
+}			HnswNeighborTupleData;
+
+typedef HnswNeighborTupleData * HnswNeighborTuple;
+
+typedef union
+{
+	struct pointerhash_hash *pointers;
+	struct offsethash_hash *offsets;
+	struct tidhash_hash *tids;
+}			visited_hash;
+
+typedef union
+{
+	HnswElement element;
+	ItemPointerData indextid;
+}			HnswUnvisited;
+
 typedef struct HnswScanOpaqueData
 {
-	/* Query */
-	Vector	   *queryVec;		/* the query vector */
-	int			strategy;		/* distance strategy number */
-	FmgrInfo	distanceFn;		/* distance function */
+	const		HnswTypeInfo *typeInfo;
+	bool		first;
+	List	   *w;
+	visited_hash v;
+	pairingheap *discarded;
+	HnswQuery	q;
+	int			m;
+	int64		tuples;
+	double		previousDistance;
+	Size		maxMemory;
+	MemoryContext tmpCtx;
 
-	/* Search parameters */
-	int			efSearch;		/* ef_search value from GUC */
+	/* Support functions */
+	HnswSupport support;
+}			HnswScanOpaqueData;
 
-	/* Results */
-	pairingheap *resultQueue;	/* min-heap of HnswCandidate by distance */
-	bool		firstCall;		/* true if amgettuple hasn't been called yet */
-	List	   *resultList;		/* list of HnswCandidate* results, sorted */
-	int			resultIdx;		/* current position in resultList */
+typedef HnswScanOpaqueData * HnswScanOpaque;
 
-	/* Memory management */
-	MemoryContext scanCtx;
-} HnswScanOpaqueData;
+typedef struct HnswVacuumState
+{
+	/* Info */
+	Relation	index;
+	IndexBulkDeleteResult *stats;
+	IndexBulkDeleteCallback callback;
+	void	   *callback_state;
 
-typedef HnswScanOpaqueData *HnswScanOpaque;
+	/* Settings */
+	int			m;
+	int			efConstruction;
 
-/*
- * HNSW GUC variable: ef_search
- */
-extern int	hnsw_ef_search;
+	/* Support functions */
+	HnswSupport support;
 
-/*
- * Function declarations -- handler
- */
-extern Datum hnswhandler(PG_FUNCTION_ARGS);
+	/* Variables */
+	struct tidhash_hash *deleting;
+	BufferAccessStrategy bas;
+	HnswNeighborTuple ntup;
+	HnswElementData highestPoint;
+	HnswElementData fallbackPoint;
 
-/* hnswbuild.c */
-extern IndexBuildResult *hnswbuild(Relation heap, Relation index,
-								   struct IndexInfo *indexInfo);
-extern void hnswbuildempty(Relation index);
+	/* Memory */
+	MemoryContext tmpCtx;
+}			HnswVacuumState;
 
-/* hnswinsert.c */
-extern bool hnswinsert(Relation index, Datum *values, bool *isnull,
-					   ItemPointer ht_ctid, Relation heapRel,
-					   IndexUniqueCheck checkUnique, bool indexUnchanged,
-					   struct IndexInfo *indexInfo);
+/* Methods */
+int			HnswGetM(Relation index);
+int			HnswGetEfConstruction(Relation index);
+FmgrInfo   *HnswOptionalProcInfo(Relation index, uint16 procnum);
+void		HnswInitSupport(HnswSupport * support, Relation index);
+Datum		HnswNormValue(const HnswTypeInfo * typeInfo, Oid collation, Datum value);
+bool		HnswCheckNorm(HnswSupport * support, Datum value);
+Buffer		HnswNewBuffer(Relation index, ForkNumber forkNum);
+void		HnswInitPage(Buffer buf, Page page);
+void		HnswInit(void);
+List	   *HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation index, HnswSupport * support, int m, bool inserting, HnswElement skipElement, visited_hash * v, pairingheap **discarded, bool initVisited, int64 *tuples);
+HnswElement HnswGetEntryPoint(Relation index);
+void		HnswGetMetaPageInfo(Relation index, int *m, int *dimensions, HnswElement * entryPoint);
+void	   *HnswAlloc(HnswAllocator * allocator, Size size);
+HnswElement HnswInitElement(char *base, ItemPointer tid, int m, double ml, int maxLevel, HnswAllocator * alloc);
+HnswElement HnswInitElementFromBlock(BlockNumber blkno, OffsetNumber offno);
+void		HnswFindElementNeighbors(char *base, HnswElement element, HnswElement entryPoint, Relation index, HnswSupport * support, int m, int efConstruction, bool existing);
+HnswSearchCandidate *HnswEntryCandidate(char *base, HnswElement entryPoint, HnswQuery * q, Relation index, HnswSupport * support, bool loadVec);
+void		HnswUpdateMetaPage(Relation index, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, ForkNumber forkNum, bool building);
+void		HnswSetNeighborTuple(char *base, HnswNeighborTuple ntup, HnswElement e, int m);
+void		HnswAddHeapTid(HnswElement element, ItemPointer heaptid);
+HnswNeighborArray *HnswInitNeighborArray(int lm, HnswAllocator * allocator);
+void		HnswInitNeighbors(char *base, HnswElement element, int m, HnswAllocator * alloc);
+bool		HnswInsertTupleOnDisk(Relation index, const HnswTypeInfo * typeInfo, HnswSupport * support, Datum value, ItemPointer heaptid, bool building);
+void		HnswUpdateNeighborsOnDisk(Relation index, HnswSupport * support, HnswElement e, int m, bool building);
+void		HnswLoadElementFromTuple(HnswElement element, HnswElementTuple etup, bool loadHeaptids, bool loadVec);
+void		HnswLoadElement(HnswElement element, double *distance, HnswQuery * q, Relation index, HnswSupport * support, bool loadVec, double *maxDistance);
+bool		HnswFormIndexValue(Datum *out, Datum *values, bool *isnull, const HnswTypeInfo * typeInfo, HnswSupport * support);
+void		HnswSetElementTuple(char *base, HnswElementTuple etup, HnswElement element);
+void		HnswUpdateConnection(char *base, HnswNeighborArray * neighbors, HnswElement newElement, float distance, int lm, int *updateIdx, Relation index, HnswSupport * support);
+bool		HnswLoadNeighborTids(HnswElement element, ItemPointerData *indextids, Relation index, int m, int lm, int lc);
+void		HnswCheckDim(int expected, const HnswTypeInfo * typeInfo, Oid collation, Datum value);
+const		HnswTypeInfo *HnswGetTypeInfo(Relation index);
 
-/* hnsw_scan.c */
-extern IndexScanDesc hnswbeginscan(Relation index, int nkeys, int norderbys);
-extern void hnswrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
-					   ScanKey orderbys, int norderbys);
-extern bool hnswgettuple(IndexScanDesc scan, ScanDirection dir);
-extern void hnswendscan(IndexScanDesc scan);
+/* Index access methods */
+IndexBuildResult *hnswbuild(Relation heap, Relation index, IndexInfo *indexInfo);
+void		hnswbuildempty(Relation index);
+bool		hnswinsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique
+					   ,bool indexUnchanged
+					   ,IndexInfo *indexInfo
+);
+IndexBulkDeleteResult *hnswbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state);
+IndexBulkDeleteResult *hnswvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
+IndexScanDesc hnswbeginscan(Relation index, int nkeys, int norderbys);
+void		hnswrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
+bool		hnswgettuple(IndexScanDesc scan, ScanDirection dir);
+void		hnswendscan(IndexScanDesc scan);
 
-/* hnswvacuum.c */
-extern IndexBulkDeleteResult *hnswbulkdelete(IndexVacuumInfo *info,
-											 IndexBulkDeleteResult *stats,
-											 IndexBulkDeleteCallback callback,
-											 void *callback_state);
-extern IndexBulkDeleteResult *hnswvacuumcleanup(IndexVacuumInfo *info,
-												IndexBulkDeleteResult *stats);
+static inline HnswNeighborArray *
+HnswGetNeighbors(char *base, HnswElement element, int lc)
+{
+	HnswNeighborArrayPtr *neighborList = HnswPtrAccess(base, element->neighbors);
 
-/* hnswcost.c */
-extern void hnswcostestimate(struct PlannerInfo *root,
-							 struct IndexPath *path,
-							 double loop_count,
-							 Cost *indexStartupCost,
-							 Cost *indexTotalCost,
-							 Selectivity *indexSelectivity,
-							 double *indexCorrelation,
-							 double *indexPages);
+	Assert(element->level >= lc);
 
-/* hnswvalidate.c */
-extern bool hnswvalidate(Oid opclassoid);
+	return HnswPtrAccess(base, neighborList[lc]);
+}
 
-/* hnswoptions.c */
-extern bytea *hnswoptions(Datum reloptions, bool validate);
+/* Hash tables */
+typedef struct TidHashEntry
+{
+	ItemPointerData tid;
+	char		status;
+}			TidHashEntry;
 
-/*
- * Utility functions (in hnswutils.c)
- */
+#define SH_PREFIX tidhash
+#define SH_ELEMENT_TYPE TidHashEntry
+#define SH_KEY_TYPE ItemPointerData
+#define SH_SCOPE extern
+#define SH_DECLARE
+#include "lib/simplehash.h"
 
-/* Distance computation */
-typedef double (*HnswDistanceFunc)(const Vector *a, const Vector *b);
-extern HnswDistanceFunc hnsw_get_distance_func(int strategy);
-extern float hnsw_calc_distance(const Vector *a, const Vector *b, int strategy);
+typedef struct PointerHashEntry
+{
+	uintptr_t	ptr;
+	char		status;
+}			PointerHashEntry;
 
-/* Graph search helpers */
-extern List *hnsw_search_layer(HnswElement *entryPoint, const Vector *query,
-							   int efSearch, int layer, int strategy,
-							   List *elements);
-extern int	hnsw_random_level(double ml);
-extern int	hnsw_get_max_neighbors(int m, int layer);
+#define SH_PREFIX pointerhash
+#define SH_ELEMENT_TYPE PointerHashEntry
+#define SH_KEY_TYPE uintptr_t
+#define SH_SCOPE extern
+#define SH_DECLARE
+#include "lib/simplehash.h"
 
-#endif							/* HNSW_H */
+typedef struct OffsetHashEntry
+{
+	Size		offset;
+	char		status;
+}			OffsetHashEntry;
+
+#define SH_PREFIX offsethash
+#define SH_ELEMENT_TYPE OffsetHashEntry
+#define SH_KEY_TYPE Size
+#define SH_SCOPE extern
+#define SH_DECLARE
+#include "lib/simplehash.h"
+
+#endif

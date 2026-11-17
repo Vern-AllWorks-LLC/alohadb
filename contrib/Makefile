@@ -35,6 +35,13 @@ SUBDIRS = \
 		alohadb_inference \
 		alohadb_learned_stats \
 		alohadb_tiering \
+		alohadb_bitemporal \
+		alohadb_embeddings \
+		alohadb_graph \
+		alohadb_lineage \
+		alohadb_measure \
+		alohadb_temporal \
+		alohadb_tsfunc \
 		pageinspect	\
 		passwordcheck	\
 		pg_buffercache	\
@@ -70,6 +77,12 @@ ifneq ($(with_uuid),no)
 SUBDIRS += uuid-ossp
 else
 ALWAYS_SUBDIRS += uuid-ossp
+endif
+
+ifeq ($(with_zstd),yes)
+SUBDIRS += alohadb_ndarray
+else
+ALWAYS_SUBDIRS += alohadb_ndarray
 endif
 
 ifeq ($(with_libxml),yes)

@@ -1,22 +1,36 @@
 /*-------------------------------------------------------------------------
  *
  * parquet_full.c
- *	  Full Parquet column reader for alohadb_parquet (version 1.1+).
+ *	  Parquet reader for alohadb_parquet (version 1.1+).
  *
- *	  Implements read_parquet_full() — a set-returning function that
- *	  reads a Parquet file and yields one jsonb row per data row.
+ *	  Implements read_parquet_full(), the C function behind
+ *	  read_parquet(file_path text, options jsonb) RETURNS SETOF jsonb.
+ *	  Every row of the file becomes one jsonb object keyed by column name.
  *
- *	  Supported encodings:  PLAIN, PLAIN_DICTIONARY (RLE dictionary)
- *	  Supported compression: UNCOMPRESSED, SNAPPY
- *	  Supported column types: INT32, INT64, FLOAT, DOUBLE,
- *	                          BYTE_ARRAY (text), BOOLEAN
- *	  Limitations: flat (non-nested, non-repeated) schemas only.
+ *	  Supported:
+ *	    - data pages v1 and v2, dictionary pages
+ *	    - encodings PLAIN, PLAIN_DICTIONARY / RLE_DICTIONARY, RLE (booleans)
+ *	    - compression UNCOMPRESSED and SNAPPY
+ *	    - physical types BOOLEAN, INT32, INT64, INT96, FLOAT, DOUBLE,
+ *	      BYTE_ARRAY, FIXED_LEN_BYTE_ARRAY
+ *	    - optional/required columns (definition levels), nested groups
+ *	      (reported as "a.b"), and single-level lists (one repetition
+ *	      level, 2- or 3-level encoding), returned as JSON arrays
+ *	    - logical types: STRING/UTF8, JSON (embedded as JSON), DATE and
+ *	      TIMESTAMP (ISO 8601 strings, "+00:00" when adjusted to UTC),
+ *	      UUID, signed/unsigned INTEGER; un-annotated BYTE_ARRAY and other
+ *	      FIXED_LEN_BYTE_ARRAY values are returned as "\x..." hex strings
+ *	      (bytea text format); NaN/Infinity as JSON strings
+ *	  Not supported (clear error): other codecs (GZIP, ZSTD, LZ4, ...),
+ *	  DELTA_* and BYTE_STREAM_SPLIT encodings, multiply-nested lists, maps.
  *
- *	  Parquet format spec: Apache 2.0 (no patent issues).
- *	  Thrift compact protocol: Apache 2.0.
- *	  Snappy decompression: open-source implementation below
- *	    (Snappy format by Google; BSD-licensed reference; the
- *	    decompression algorithm itself is prior art — LZ77, 1977).
+ *	  The result is materialized into a tuplestore one row group at a time,
+ *	  so memory use is bounded by a single row group.
+ *
+ *	  Prior art / patent notes: Apache Parquet and Apache Thrift are open
+ *	  specifications under the Apache License 2.0 (express patent grant
+ *	  from contributors); Snappy is an openly documented LZ77-family
+ *	  format (see pq_common.c).
  *
  * Copyright (c) 2025, AlohaDB
  *
@@ -28,1349 +42,1311 @@
 
 #include "postgres.h"
 
+#include <math.h>
+#include <stdio.h>
+
+#include "catalog/pg_type.h"
+#include "common/int.h"
+#include "common/shortest_dec.h"
+#include "datatype/timestamp.h"
 #include "fmgr.h"
 #include "funcapi.h"
-#include "lib/stringinfo.h"
+#include "mb/pg_wchar.h"
+#include "miscadmin.h"
+#include "storage/fd.h"
 #include "utils/builtins.h"
+#include "utils/date.h"
+#include "utils/datetime.h"
+#include "utils/json.h"
 #include "utils/jsonb.h"
+#include "utils/memutils.h"
+#include "utils/timestamp.h"
+#include "utils/tuplestore.h"
 
 #include "alohadb_parquet.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <math.h>
+#include "pq_common.h"
 
 PG_FUNCTION_INFO_V1(read_parquet_full);
 
-/* ================================================================
- * Minimal Thrift compact-protocol decoder
- *
- * Parquet footer metadata is encoded in Thrift compact binary
- * protocol.  We implement just enough to read FileMetaData:
- *   - varint / zigzag decoding
- *   - field header parsing (field delta + type)
- *   - string / struct / list fields
- *
- * Reference: Apache Thrift spec (Apache 2.0).
- * ================================================================ */
-
-typedef struct ThriftBuf
-{
-	const uint8_t *data;
-	size_t		   pos;
-	size_t		   len;
-} ThriftBuf;
-
-static uint64_t
-thrift_read_varint(ThriftBuf *b)
-{
-	uint64_t result = 0;
-	int		 shift  = 0;
-	uint8_t	 byte;
-
-	while (b->pos < b->len)
-	{
-		byte = b->data[b->pos++];
-		result |= (uint64_t)(byte & 0x7f) << shift;
-		if ((byte & 0x80) == 0)
-			break;
-		shift += 7;
-	}
-	return result;
-}
-
-static int64_t
-thrift_read_zigzag(ThriftBuf *b)
-{
-	uint64_t n = thrift_read_varint(b);
-	return (int64_t)((n >> 1) ^ -(int64_t)(n & 1));
-}
-
-/* Return false at end-of-struct (type 0), true otherwise.
- * *field_id and *type_id are set on true. */
-static bool
-thrift_next_field(ThriftBuf *b, int *prev_field_id,
-				  int *field_id, int *type_id)
-{
-	uint8_t	header;
-
-	if (b->pos >= b->len)
-		return false;
-
-	header = b->data[b->pos++];
-	if (header == 0)
-		return false;	/* stop field */
-
-	*type_id = header & 0x0f;
-
-	if ((header & 0xf0) != 0)
-	{
-		/* Short form: delta in high nibble */
-		*field_id = *prev_field_id + ((header >> 4) & 0x0f);
-	}
-	else
-	{
-		/* Long form: zigzag i16 follows */
-		*field_id = (int) thrift_read_zigzag(b);
-	}
-	*prev_field_id = *field_id;
-	return true;
-}
-
-/* Skip over any Thrift value (recursive, handles nested structs/lists) */
-static void
-thrift_skip(ThriftBuf *b, int type_id)
-{
-	int		fid = 0, ft, n, i;
-	uint8_t	elem_type;
-
-	switch (type_id)
-	{
-		case 1:		/* boolean true  (1 byte already consumed via header) */
-		case 2:		/* boolean false */
-			break;
-		case 3:		/* i8 */
-			b->pos++;
-			break;
-		case 4:		/* i16 (zigzag varint) */
-		case 5:		/* i32 */
-		case 6:		/* i64 */
-			thrift_read_varint(b);
-			break;
-		case 7:		/* double */
-			b->pos += 8;
-			break;
-		case 8:		/* binary/string */
-			{
-				int len = (int) thrift_read_varint(b);
-				b->pos += len;
-			}
-			break;
-		case 12:	/* struct */
-			while (thrift_next_field(b, &fid, &fid, &ft))
-				thrift_skip(b, ft);
-			break;
-		case 15:	/* list */
-			if (b->pos >= b->len) break;
-			elem_type = b->data[b->pos] & 0x0f;
-			n = (b->data[b->pos] >> 4) & 0x0f;
-			b->pos++;
-			if (n == 15)
-				n = (int) thrift_read_varint(b);
-			for (i = 0; i < n; i++)
-				thrift_skip(b, elem_type);
-			break;
-		default:
-			/* Unknown type — we can't safely continue */
-			b->pos = b->len;
-			break;
-	}
-}
-
-/* Read a binary/string field; returns a palloc'd buffer */
-static char *
-thrift_read_string(ThriftBuf *b, int *out_len)
-{
-	int		len = (int) thrift_read_varint(b);
-	char   *s;
-
-	if (len < 0 || b->pos + (size_t) len > b->len)
-		return NULL;
-
-	s = palloc(len + 1);
-	memcpy(s, b->data + b->pos, len);
-	s[len] = '\0';
-	b->pos += len;
-	*out_len = len;
-	return s;
-}
+#define PG_TO_UNIX_DAYS		(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)
+#define PG_TO_UNIX_USECS	((int64) PG_TO_UNIX_DAYS * USECS_PER_DAY)
 
 /* ================================================================
- * Parquet schema and column metadata
+ * Metadata structures
  * ================================================================ */
 
-#define PARQUET_TYPE_BOOLEAN   0
-#define PARQUET_TYPE_INT32     1
-#define PARQUET_TYPE_INT64     2
-#define PARQUET_TYPE_FLOAT     4
-#define PARQUET_TYPE_DOUBLE    5
-#define PARQUET_TYPE_BYTEARRAY 6
-
-#define PARQUET_ENCODING_PLAIN            0
-#define PARQUET_ENCODING_PLAIN_DICTIONARY 2
-#define PARQUET_ENCODING_RLE_DICTIONARY   8
-
-#define PARQUET_COMPRESS_UNCOMPRESSED  0
-#define PARQUET_COMPRESS_SNAPPY        1
-
-typedef struct ColumnMeta
+typedef struct PqSchemaNode
 {
-	char   *name;		/* column name */
-	int		type;		/* PARQUET_TYPE_* */
-	int		codec;		/* PARQUET_COMPRESS_* */
-	int64_t file_offset;
-	int64_t total_compressed_size;
-	int64_t total_uncompressed_size;
-	int64_t num_values;
-} ColumnMeta;
+	char	   *name;
+	int			type;			/* physical type, -1 for groups */
+	int			type_length;
+	int			repetition;
+	int			num_children;
+	int			converted;		/* ConvertedType or -1 */
+	int			logical;		/* LogicalType member id or 0 */
+	bool		ts_utc;
+	int			ts_unit;		/* 1 millis, 2 micros, 3 nanos */
+	int			int_bits;
+	bool		int_signed;
+} PqSchemaNode;
 
-typedef struct RowGroup
+typedef struct PqLeaf
 {
-	ColumnMeta *columns;
+	char	   *name;			/* output key */
+	PqSchemaNode *node;
+	int			max_def;
+	int			max_rep;
+	int			list_def;		/* definition level of the repeated node */
+} PqLeaf;
+
+typedef struct PqChunk
+{
+	int			type;
+	int			codec;
+	int64		start;
+	int64		size;
+} PqChunk;
+
+typedef struct PqRowGroup
+{
+	int64		num_rows;
+	PqChunk    *cols;
 	int			ncols;
-	int64_t		num_rows;
-} RowGroup;
+} PqRowGroup;
 
-typedef struct ParquetFile
+typedef struct PqFileMeta
 {
-	RowGroup   *row_groups;
-	int			nrow_groups;
-	char	  **col_names;
-	int		   *col_types;
-	int			nschema_cols;	/* number of leaf schema elements */
-	int64_t		num_rows_total;
-} ParquetFile;
+	PqSchemaNode *nodes;
+	int			nnodes;
+	PqLeaf	   *leaves;
+	int			nleaves;
+	PqRowGroup *rgs;
+	int			nrgs;
+	int64		num_rows;
+} PqFileMeta;
+
+static void
+pq_corrupt(const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_DATA_CORRUPTED),
+			 errmsg("corrupt Parquet file: %s", what)));
+}
 
 /* ================================================================
- * Minimal Snappy decompressor
- *
- * Snappy is an LZ77 variant (LZ77: Ziv & Lempel 1977, public domain).
- * The format is documented and open; we implement stream decompression
- * only for the block format used by Parquet column chunks.
+ * Footer parsing
  * ================================================================ */
 
-static size_t
-snappy_read_varint32(const uint8_t *src, size_t pos, size_t len,
-					 uint32_t *out)
+static void
+parse_logical_type(ThriftReader *r, PqSchemaNode *n)
 {
-	uint32_t result = 0;
-	int		 shift  = 0;
+	int			last = 0,
+				fid,
+				ft;
 
-	while (pos < len)
+	while (tr_field(r, &last, &fid, &ft))
 	{
-		uint8_t b = src[pos++];
-		result |= (uint32_t)(b & 0x7f) << shift;
-		if ((b & 0x80) == 0)
-			break;
-		shift += 7;
+		if (ft != TC_STRUCT)
+		{
+			tr_skip(r, ft, 0);
+			continue;
+		}
+		n->logical = fid;
+		if (fid == PQ_LT_TIMESTAMP)
+		{
+			int			l2 = 0,
+						f2,
+						t2;
+
+			while (tr_field(r, &l2, &f2, &t2))
+			{
+				if (f2 == 1)
+					n->ts_utc = tr_bool(r, t2);
+				else if (f2 == 2 && t2 == TC_STRUCT)
+				{
+					int			l3 = 0,
+								f3,
+								t3;
+
+					while (tr_field(r, &l3, &f3, &t3))
+					{
+						n->ts_unit = f3;
+						tr_skip(r, t3, 0);
+					}
+				}
+				else
+					tr_skip(r, t2, 0);
+			}
+		}
+		else if (fid == PQ_LT_INTEGER)
+		{
+			int			l2 = 0,
+						f2,
+						t2;
+
+			while (tr_field(r, &l2, &f2, &t2))
+			{
+				if (f2 == 1 && t2 == TC_BYTE)
+				{
+					if (r->pos >= r->len)
+						pq_corrupt("truncated integer type");
+					n->int_bits = (int8) r->data[r->pos++];
+				}
+				else if (f2 == 2)
+					n->int_signed = tr_bool(r, t2);
+				else
+					tr_skip(r, t2, 0);
+			}
+		}
+		else
+			tr_skip(r, ft, 0);
 	}
-	*out = result;
+}
+
+static void
+parse_schema_element(ThriftReader *r, PqSchemaNode *n)
+{
+	int			last = 0,
+				fid,
+				ft;
+
+	memset(n, 0, sizeof(*n));
+	n->type = -1;
+	n->converted = -1;
+	n->int_signed = true;
+
+	while (tr_field(r, &last, &fid, &ft))
+	{
+		switch (fid)
+		{
+			case 1:
+				n->type = (int) tr_zigzag(r);
+				break;
+			case 2:
+				n->type_length = (int) tr_zigzag(r);
+				break;
+			case 3:
+				n->repetition = (int) tr_zigzag(r);
+				break;
+			case 4:
+				n->name = tr_binary(r, NULL);
+				break;
+			case 5:
+				n->num_children = (int) tr_zigzag(r);
+				break;
+			case 6:
+				n->converted = (int) tr_zigzag(r);
+				break;
+			case 10:
+				if (ft == TC_STRUCT)
+					parse_logical_type(r, n);
+				else
+					tr_skip(r, ft, 0);
+				break;
+			default:
+				tr_skip(r, ft, 0);
+				break;
+		}
+	}
+	if (n->name == NULL)
+		n->name = pstrdup("");
+}
+
+static void
+parse_column_chunk(ThriftReader *r, PqChunk *c)
+{
+	int			last = 0,
+				fid,
+				ft;
+	int64		data_off = -1;
+	int64		dict_off = -1;
+
+	c->codec = PQ_CODEC_UNCOMPRESSED;
+	c->size = 0;
+	c->type = -1;
+
+	while (tr_field(r, &last, &fid, &ft))
+	{
+		if (fid == 3 && ft == TC_STRUCT)
+		{
+			int			l2 = 0,
+						f2,
+						t2;
+
+			while (tr_field(r, &l2, &f2, &t2))
+			{
+				switch (f2)
+				{
+					case 1:
+						c->type = (int) tr_zigzag(r);
+						break;
+					case 4:
+						c->codec = (int) tr_zigzag(r);
+						break;
+					case 7:
+						c->size = tr_zigzag(r);
+						break;
+					case 9:
+						data_off = tr_zigzag(r);
+						break;
+					case 11:
+						dict_off = tr_zigzag(r);
+						break;
+					default:
+						tr_skip(r, t2, 0);
+						break;
+				}
+			}
+		}
+		else if (fid == 1)
+		{
+			(void) tr_binary(r, NULL);
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Parquet files with column chunks in external files are not supported")));
+		}
+		else
+			tr_skip(r, ft, 0);
+	}
+	if (data_off < 0)
+		pq_corrupt("column chunk without metadata");
+	c->start = (dict_off > 0 && dict_off < data_off) ? dict_off : data_off;
+}
+
+/* Walk the flattened schema tree to compute leaf columns and levels */
+static void
+walk_schema(PqFileMeta *fm, int *idx, int def, int rep, int list_def,
+			const char *path, const char *top, PqLeaf *out, int *nout)
+{
+	PqSchemaNode *n;
+	char	   *mypath;
+	int			i;
+
+	if (*idx >= fm->nnodes)
+		pq_corrupt("schema tree is truncated");
+	n = &fm->nodes[(*idx)++];
+
+	if (n->repetition == PQ_REP_OPTIONAL)
+		def++;
+	else if (n->repetition == PQ_REP_REPEATED)
+	{
+		def++;
+		rep++;
+		list_def = def;
+	}
+	mypath = path ? psprintf("%s.%s", path, n->name) : pstrdup(n->name);
+	if (top == NULL)
+		top = n->name;
+
+	if (n->num_children <= 0)
+	{
+		PqLeaf	   *l;
+
+		if (n->type < 0)
+			pq_corrupt("schema leaf without a type");
+		if (*nout >= fm->nnodes)
+			pq_corrupt("too many leaves");
+		if (rep > 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("nested Parquet column \"%s\" with more than one repetition level is not supported",
+							mypath)));
+		l = &out[(*nout)++];
+		l->name = (rep > 0) ? pstrdup(top) : mypath;
+		l->node = n;
+		l->max_def = def;
+		l->max_rep = rep;
+		l->list_def = list_def;
+		return;
+	}
+	for (i = 0; i < n->num_children; i++)
+		walk_schema(fm, idx, def, rep, list_def, mypath, top, out, nout);
+}
+
+static PqFileMeta *
+parse_footer(const uint8 *data, int len)
+{
+	ThriftReader r;
+	PqFileMeta *fm = palloc0(sizeof(PqFileMeta));
+	int			last = 0,
+				fid,
+				ft;
+	bool		have_schema = false;
+
+	r.data = data;
+	r.pos = 0;
+	r.len = len;
+
+	while (tr_field(&r, &last, &fid, &ft))
+	{
+		if (fid == 2 && ft == TC_LIST)
+		{
+			int			et,
+						n,
+						i;
+
+			tr_list_header(&r, &et, &n);
+			if (et != TC_STRUCT || n < 1)
+				pq_corrupt("bad schema list");
+			fm->nodes = palloc0(sizeof(PqSchemaNode) * n);
+			fm->nnodes = n;
+			for (i = 0; i < n; i++)
+				parse_schema_element(&r, &fm->nodes[i]);
+			have_schema = true;
+		}
+		else if (fid == 3)
+			fm->num_rows = tr_zigzag(&r);
+		else if (fid == 4 && ft == TC_LIST)
+		{
+			int			et,
+						n,
+						i;
+
+			tr_list_header(&r, &et, &n);
+			if (et != TC_STRUCT)
+				pq_corrupt("bad row group list");
+			fm->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
+			fm->nrgs = n;
+			for (i = 0; i < n; i++)
+			{
+				PqRowGroup *rg = &fm->rgs[i];
+				int			l2 = 0,
+							f2,
+							t2;
+
+				while (tr_field(&r, &l2, &f2, &t2))
+				{
+					if (f2 == 1 && t2 == TC_LIST)
+					{
+						int			e3,
+									n3,
+									j;
+
+						tr_list_header(&r, &e3, &n3);
+						if (e3 != TC_STRUCT)
+							pq_corrupt("bad column chunk list");
+						rg->cols = palloc0(sizeof(PqChunk) * Max(n3, 1));
+						rg->ncols = n3;
+						for (j = 0; j < n3; j++)
+							parse_column_chunk(&r, &rg->cols[j]);
+					}
+					else if (f2 == 3)
+						rg->num_rows = tr_zigzag(&r);
+					else
+						tr_skip(&r, t2, 0);
+				}
+			}
+		}
+		else
+			tr_skip(&r, ft, 0);
+	}
+
+	if (!have_schema)
+		pq_corrupt("missing schema");
+
+	/* leaves */
+	{
+		int			idx = 1;
+		int			i;
+		PqSchemaNode *root = &fm->nodes[0];
+
+		fm->leaves = palloc0(sizeof(PqLeaf) * fm->nnodes);
+		for (i = 0; i < root->num_children; i++)
+			walk_schema(fm, &idx, 0, 0, 0, NULL, NULL, fm->leaves, &fm->nleaves);
+	}
+
+	{
+		int			i;
+
+		for (i = 0; i < fm->nrgs; i++)
+		{
+			int			j;
+
+			if (fm->rgs[i].ncols != fm->nleaves)
+				pq_corrupt("row group column count does not match schema");
+			for (j = 0; j < fm->rgs[i].ncols; j++)
+			{
+				int			codec = fm->rgs[i].cols[j].codec;
+
+				if (codec != PQ_CODEC_UNCOMPRESSED && codec != PQ_CODEC_SNAPPY)
+				{
+					static const char *const names[] = {
+						"UNCOMPRESSED", "SNAPPY", "GZIP", "LZO", "BROTLI",
+						"LZ4", "ZSTD", "LZ4_RAW"
+					};
+
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("Parquet compression codec %s is not supported",
+									(codec >= 0 && codec < lengthof(names)) ? names[codec] : "unknown"),
+							 errhint("Only UNCOMPRESSED and SNAPPY column chunks can be read.")));
+				}
+			}
+		}
+	}
+	return fm;
+}
+
+/* ================================================================
+ * Page parsing and decoding
+ * ================================================================ */
+
+typedef struct PqPageHeader
+{
+	int			type;
+	int32		usize;
+	int32		csize;
+	int32		num_values;
+	int			encoding;
+	/* v2 */
+	int32		def_len;
+	int32		rep_len;
+	bool		is_compressed;
+} PqPageHeader;
+
+static void
+parse_page_header(ThriftReader *r, PqPageHeader *h)
+{
+	int			last = 0,
+				fid,
+				ft;
+
+	memset(h, 0, sizeof(*h));
+	h->type = -1;
+	h->is_compressed = true;
+
+	while (tr_field(r, &last, &fid, &ft))
+	{
+		if (fid == 1)
+			h->type = (int) tr_zigzag(r);
+		else if (fid == 2)
+			h->usize = (int32) tr_zigzag(r);
+		else if (fid == 3)
+			h->csize = (int32) tr_zigzag(r);
+		else if ((fid == 5 || fid == 7 || fid == 8) && ft == TC_STRUCT)
+		{
+			int			l2 = 0,
+						f2,
+						t2;
+
+			while (tr_field(r, &l2, &f2, &t2))
+			{
+				if (f2 == 1)
+					h->num_values = (int32) tr_zigzag(r);
+				else if (f2 == 2 && fid != 8)
+					h->encoding = (int) tr_zigzag(r);
+				else if (f2 == 4 && fid == 8)
+					h->encoding = (int) tr_zigzag(r);
+				else if (f2 == 5 && fid == 8)
+					h->def_len = (int32) tr_zigzag(r);
+				else if (f2 == 6 && fid == 8)
+					h->rep_len = (int32) tr_zigzag(r);
+				else if (f2 == 7 && fid == 8)
+					h->is_compressed = tr_bool(r, t2);
+				else
+					tr_skip(r, t2, 0);
+			}
+		}
+		else
+			tr_skip(r, ft, 0);
+	}
+	if (h->usize < 0 || h->csize < 0 || h->num_values < 0 ||
+		h->def_len < 0 || h->rep_len < 0)
+		pq_corrupt("negative size in page header");
+}
+
+static int
+bit_width_of(int maxval)
+{
+	int			w = 0;
+
+	while (maxval > 0)
+	{
+		w++;
+		maxval >>= 1;
+	}
+	return w;
+}
+
+/*
+ * Decode n values of the RLE/bit-packed hybrid encoding.
+ * Returns the number of bytes consumed.
+ */
+static size_t
+decode_hybrid(const uint8 *p, size_t len, int bw, int n, int32 *out)
+{
+	size_t		pos = 0;
+	int			got = 0;
+	int			vbytes = (bw + 7) / 8;
+
+	if (bw > 32)
+		pq_corrupt("bad bit width");
+	while (got < n)
+	{
+		uint64		ind = 0;
+		int			shift = 0;
+		uint8		b;
+
+		do
+		{
+			if (pos >= len || shift > 63)
+				pq_corrupt("truncated RLE run");
+			b = p[pos++];
+			ind |= (uint64) (b & 0x7f) << shift;
+			shift += 7;
+		} while (b & 0x80);
+
+		if (ind & 1)
+		{
+			uint64		groups = ind >> 1;
+			uint64		nvals = groups * 8;
+			uint64		nbytes = groups * bw;
+			uint64		k;
+
+			if (nbytes > len - pos)
+				pq_corrupt("truncated bit-packed run");
+			for (k = 0; k < nvals && got < n; k++)
+			{
+				uint64		bit = k * bw;
+				uint32		v = 0;
+				int			i;
+
+				for (i = 0; i < bw; i++, bit++)
+					if (p[pos + (bit >> 3)] & (1 << (bit & 7)))
+						v |= (1U << i);
+				out[got++] = (int32) v;
+			}
+			pos += nbytes;
+		}
+		else
+		{
+			uint64		run = ind >> 1;
+			uint32		v = 0;
+			int			i;
+
+			if ((size_t) vbytes > len - pos)
+				pq_corrupt("truncated RLE value");
+			for (i = 0; i < vbytes; i++)
+				v |= (uint32) p[pos + i] << (8 * i);
+			pos += vbytes;
+			if (run == 0)
+				pq_corrupt("empty RLE run");
+			while (run-- > 0 && got < n)
+				out[got++] = (int32) v;
+		}
+	}
 	return pos;
 }
 
-/*
- * Decompress a Snappy-compressed block.
- * Returns uncompressed size, or 0 on error.
- * Caller must supply dst buffer of at least uncompressed_size bytes.
- */
-static size_t
-snappy_decompress(const uint8_t *src, size_t src_len,
-				  uint8_t *dst, size_t dst_max)
+static uint32
+read_le32(const uint8 *p)
 {
-	uint32_t	uncompressed_len;
-	size_t		ip = 0;		/* input position */
-	size_t		op = 0;		/* output position */
+	return (uint32) p[0] | ((uint32) p[1] << 8) |
+		((uint32) p[2] << 16) | ((uint32) p[3] << 24);
+}
 
-	/* Read uncompressed length */
-	ip = snappy_read_varint32(src, ip, src_len, &uncompressed_len);
-	if (uncompressed_len > dst_max)
-		return 0;
+static uint64
+read_le64(const uint8 *p)
+{
+	return (uint64) read_le32(p) | ((uint64) read_le32(p + 4) << 32);
+}
 
-	while (ip < src_len)
+/* ================================================================
+ * Value rendering to JSON
+ * ================================================================ */
+
+static void
+append_hex_string(StringInfo out, const uint8 *p, int len)
+{
+	static const char hex[] = "0123456789abcdef";
+	int			i;
+
+	appendStringInfoString(out, "\"\\\\x");
+	for (i = 0; i < len; i++)
 	{
-		uint8_t tag = src[ip++];
-		int		tag_type = tag & 3;
+		appendStringInfoChar(out, hex[p[i] >> 4]);
+		appendStringInfoChar(out, hex[p[i] & 15]);
+	}
+	appendStringInfoChar(out, '"');
+}
 
-		if (tag_type == 0)
-		{
-			/* Literal */
-			uint32_t	lit_len;
-			int			nbytes = (tag >> 2) & 0x3f;
+static void
+append_double(StringInfo out, double v, bool is_float)
+{
+	char		buf[64];
 
-			if (nbytes < 60)
-			{
-				lit_len = (uint32_t) nbytes + 1;
-			}
-			else
-			{
-				int		xtra = nbytes - 59;
-				uint32_t v = 0;
-				int		i;
-
-				for (i = 0; i < xtra; i++)
-					v |= ((uint32_t) src[ip++]) << (i * 8);
-				lit_len = v + 1;
-			}
-
-			if (ip + lit_len > src_len || op + lit_len > dst_max)
-				return 0;
-			memcpy(dst + op, src + ip, lit_len);
-			ip += lit_len;
-			op += lit_len;
-		}
-		else if (tag_type == 1)
-		{
-			/* Copy 1 (1-byte offset) */
-			uint32_t	copy_len    = 4 + ((tag >> 2) & 0x7);
-			uint32_t	copy_offset = ((tag >> 5) & 0x7) |
-									((uint32_t) src[ip++] << 3);
-			size_t		j;
-
-			if (op < copy_offset || op + copy_len > dst_max)
-				return 0;
-			for (j = 0; j < copy_len; j++)
-				dst[op + j] = dst[op - copy_offset + j];
-			op += copy_len;
-		}
-		else if (tag_type == 2)
-		{
-			/* Copy 2 (2-byte offset) */
-			uint32_t	copy_len    = 1 + ((tag >> 2) & 0x3f);
-			uint32_t	copy_offset = (uint32_t) src[ip] |
-									((uint32_t) src[ip+1] << 8);
-			size_t		j;
-
-			ip += 2;
-			if (op < copy_offset || op + copy_len > dst_max)
-				return 0;
-			for (j = 0; j < copy_len; j++)
-				dst[op + j] = dst[op - copy_offset + j];
-			op += copy_len;
-		}
+	if (isnan(v))
+		appendStringInfoString(out, "\"NaN\"");
+	else if (isinf(v))
+		appendStringInfoString(out, v > 0 ? "\"Infinity\"" : "\"-Infinity\"");
+	else
+	{
+		if (is_float)
+			float_to_shortest_decimal_buf((float) v, buf);
 		else
-		{
-			/* Copy 4 (4-byte offset) */
-			uint32_t	copy_len    = 1 + ((tag >> 2) & 0x3f);
-			uint32_t	copy_offset = (uint32_t) src[ip] |
-									((uint32_t) src[ip+1] << 8) |
-									((uint32_t) src[ip+2] << 16) |
-									((uint32_t) src[ip+3] << 24);
-			size_t		j;
-
-			ip += 4;
-			if (op < copy_offset || op + copy_len > dst_max)
-				return 0;
-			for (j = 0; j < copy_len; j++)
-				dst[op + j] = dst[op - copy_offset + j];
-			op += copy_len;
-		}
-	}
-
-	return op;
-}
-
-/* ================================================================
- * Thrift footer parsing
- *
- * We parse just enough of FileMetaData to get:
- *   - schema element names and types
- *   - row group locations (file_offset, compressed/uncompressed size,
- *     codec) and row counts
- * ================================================================ */
-
-static void
-parse_schema_element(ThriftBuf *b, char **out_name, int *out_type,
-					 bool *out_is_leaf)
-{
-	int prev_fid = 0, fid, ft;
-	int num_children = -1;
-
-	*out_name    = NULL;
-	*out_type    = -1;
-	*out_is_leaf = false;
-
-	while (thrift_next_field(b, &prev_fid, &fid, &ft))
-	{
-		switch (fid)
-		{
-			case 1:	/* type (optional — absent for group nodes) */
-				*out_type = (int) thrift_read_zigzag(b);
-				break;
-			case 2:	/* type_length */
-				thrift_read_varint(b);
-				break;
-			case 3:	/* repetition_type */
-				thrift_read_varint(b);
-				break;
-			case 4:	/* name */
-				{
-					int len;
-					*out_name = thrift_read_string(b, &len);
-				}
-				break;
-			case 5:	/* num_children (present for group nodes) */
-				num_children = (int) thrift_read_zigzag(b);
-				break;
-			default:
-				thrift_skip(b, ft);
-				break;
-		}
-	}
-
-	*out_is_leaf = (num_children < 0);
-}
-
-static void
-parse_column_metadata(ThriftBuf *b, ColumnMeta *col)
-{
-	int prev_fid = 0, fid, ft;
-
-	col->type                   = PARQUET_TYPE_BYTEARRAY;
-	col->codec                  = PARQUET_COMPRESS_UNCOMPRESSED;
-	col->file_offset            = 0;
-	col->total_compressed_size  = 0;
-	col->total_uncompressed_size = 0;
-	col->num_values             = 0;
-
-	while (thrift_next_field(b, &prev_fid, &fid, &ft))
-	{
-		switch (fid)
-		{
-			case 1:	/* type */
-				col->type = (int) thrift_read_zigzag(b);
-				break;
-			case 3:	/* codec */
-				col->codec = (int) thrift_read_zigzag(b);
-				break;
-			case 5:	/* num_values */
-				col->num_values = (int64_t) thrift_read_zigzag(b);
-				break;
-			case 6:	/* total_uncompressed_size */
-				col->total_uncompressed_size = (int64_t) thrift_read_zigzag(b);
-				break;
-			case 7:	/* total_compressed_size */
-				col->total_compressed_size = (int64_t) thrift_read_zigzag(b);
-				break;
-			case 9:	/* data_page_offset */
-				col->file_offset = (int64_t) thrift_read_zigzag(b);
-				break;
-			default:
-				thrift_skip(b, ft);
-				break;
-		}
+			double_to_shortest_decimal_buf(v, buf);
+		appendStringInfoString(out, buf);
 	}
 }
 
 static void
-parse_column_chunk(ThriftBuf *b, ColumnMeta *col)
+append_timestamp(StringInfo out, int64 unix_usecs, bool utc)
 {
-	int prev_fid = 0, fid, ft;
+	Timestamp	ts;
+	char		buf[MAXDATELEN + 1];
 
-	while (thrift_next_field(b, &prev_fid, &fid, &ft))
+	if (pg_sub_s64_overflow(unix_usecs, PG_TO_UNIX_USECS, &ts) ||
+		!IS_VALID_TIMESTAMP(ts))
 	{
-		switch (fid)
-		{
-			case 2:	/* meta_data (ColumnMetaData struct) */
-				parse_column_metadata(b, col);
-				break;
-			case 4:	/* file_offset (for dictionary page) */
-				col->file_offset = (int64_t) thrift_read_zigzag(b);
-				break;
-			default:
-				thrift_skip(b, ft);
-				break;
-		}
+		appendStringInfo(out, INT64_FORMAT, unix_usecs);
+		return;
 	}
-}
-
-/*
- * Parse the Thrift-encoded Parquet footer (FileMetaData).
- * Returns a palloc'd ParquetFile structure.
- */
-static ParquetFile *
-parse_parquet_footer(const uint8_t *footer_data, int footer_len)
-{
-	ThriftBuf	b;
-	ParquetFile *pf;
-	int			prev_fid = 0, fid, ft;
-
-	/* Schema element storage (pre-allocated, fixed max) */
-	char	   *schema_names[4096];
-	int			schema_types[4096];
-	int			nschema = 0;
-
-	/* Row group storage */
-	RowGroup	rgs[4096];
-	int			nrgs = 0;
-
-	b.data = footer_data;
-	b.pos  = 0;
-	b.len  = (size_t) footer_len;
-
-	pf = palloc0(sizeof(ParquetFile));
-
-	while (thrift_next_field(&b, &prev_fid, &fid, &ft))
+	if (utc)
 	{
-		switch (fid)
-		{
-			case 2:	/* schema list */
-			{
-				/* List header: elem_type + count */
-				int		nelem, elem_type, i;
+		int			tz = 0;
 
-				if (b.pos >= b.len) break;
-				elem_type = b.data[b.pos] & 0x0f;
-				nelem     = (b.data[b.pos] >> 4) & 0x0f;
-				b.pos++;
-				if (nelem == 15)
-					nelem = (int) thrift_read_varint(&b);
-				(void) elem_type;
-
-				for (i = 0; i < nelem && nschema < 4096; i++)
-				{
-					char   *name;
-					int		type;
-					bool	is_leaf;
-
-					parse_schema_element(&b, &name, &type, &is_leaf);
-
-					if (is_leaf && name)
-					{
-						schema_names[nschema] = name;
-						schema_types[nschema] = type;
-						nschema++;
-					}
-				}
-				break;
-			}
-
-			case 3:	/* num_rows */
-				pf->num_rows_total = (int64_t) thrift_read_zigzag(&b);
-				break;
-
-			case 4:	/* row_groups list */
-			{
-				int		nrg_elem, elem_type2, i;
-
-				if (b.pos >= b.len) break;
-				elem_type2 = b.data[b.pos] & 0x0f;
-				nrg_elem   = (b.data[b.pos] >> 4) & 0x0f;
-				b.pos++;
-				if (nrg_elem == 15)
-					nrg_elem = (int) thrift_read_varint(&b);
-				(void) elem_type2;
-
-				for (i = 0; i < nrg_elem && nrgs < 4096; i++)
-				{
-					/* Each row group is a struct */
-					int		rg_prev = 0, rg_fid, rg_ft;
-
-					rgs[nrgs].num_rows = 0;
-
-					/* Columns: list of ColumnChunk structs */
-					ColumnMeta *cols = palloc0(sizeof(ColumnMeta) * nschema);
-					int			ncol_parsed = 0;
-
-					while (thrift_next_field(&b, &rg_prev, &rg_fid, &rg_ft))
-					{
-						switch (rg_fid)
-						{
-							case 1:	/* columns */
-							{
-								int		ncol_elem, col_etype, j;
-
-								if (b.pos >= b.len) break;
-								col_etype = b.data[b.pos] & 0x0f;
-								ncol_elem = (b.data[b.pos] >> 4) & 0x0f;
-								b.pos++;
-								if (ncol_elem == 15)
-									ncol_elem = (int) thrift_read_varint(&b);
-								(void) col_etype;
-
-								for (j = 0; j < ncol_elem && ncol_parsed < nschema; j++)
-								{
-									parse_column_chunk(&b, &cols[ncol_parsed]);
-									ncol_parsed++;
-								}
-								break;
-							}
-							case 3:	/* num_rows */
-								rgs[nrgs].num_rows = (int64_t) thrift_read_zigzag(&b);
-								break;
-							default:
-								thrift_skip(&b, rg_ft);
-								break;
-						}
-					}
-
-					rgs[nrgs].columns = cols;
-					rgs[nrgs].ncols   = ncol_parsed;
-					nrgs++;
-				}
-				break;
-			}
-
-			default:
-				thrift_skip(&b, ft);
-				break;
-		}
-	}
-
-	/* Fill pf */
-	pf->nschema_cols = nschema;
-	pf->col_names    = palloc(sizeof(char *) * nschema);
-	pf->col_types    = palloc(sizeof(int)    * nschema);
-	memcpy(pf->col_names, schema_names, nschema * sizeof(char *));
-	memcpy(pf->col_types, schema_types, nschema * sizeof(int));
-
-	pf->nrow_groups  = nrgs;
-	pf->row_groups   = palloc(sizeof(RowGroup) * nrgs);
-	memcpy(pf->row_groups, rgs, nrgs * sizeof(RowGroup));
-
-	return pf;
-}
-
-/* ================================================================
- * Page decoder
- *
- * After decompression each column chunk contains one or more pages.
- * Each page has a 4-byte (little-endian) length header followed by
- * a Thrift-encoded PageHeader struct, then the page data.
- *
- * We handle:
- *   DICTIONARY_PAGE: build a string/int/float dictionary
- *   DATA_PAGE / DATA_PAGE_V2: read values
- * ================================================================ */
-
-#define PAGE_TYPE_DATA_PAGE        0
-#define PAGE_TYPE_INDEX_PAGE       1
-#define PAGE_TYPE_DICTIONARY_PAGE  2
-#define PAGE_TYPE_DATA_PAGE_V2     3
-
-typedef struct ParquetPageHeader
-{
-	int		type;
-	int32_t uncompressed_page_size;
-	int32_t compressed_page_size;
-	int32_t num_values;
-	int		encoding;
-	int		def_level_encoding;
-	int		rep_level_encoding;
-	int		dict_page_encoding;
-} ParquetPageHeader;
-
-static ParquetPageHeader
-parse_page_header(ThriftBuf *b)
-{
-	ParquetPageHeader	h;
-	int			prev_fid = 0, fid, ft;
-
-	memset(&h, 0, sizeof(h));
-
-	while (thrift_next_field(b, &prev_fid, &fid, &ft))
-	{
-		switch (fid)
-		{
-			case 1:	/* type */
-				h.type = (int) thrift_read_zigzag(b);
-				break;
-			case 2:	/* uncompressed_page_size */
-				h.uncompressed_page_size = (int32_t) thrift_read_zigzag(b);
-				break;
-			case 3:	/* compressed_page_size */
-				h.compressed_page_size = (int32_t) thrift_read_zigzag(b);
-				break;
-			case 5:	/* data_page_header */
-				/* Sub-struct: num_values, encoding, def/rep level encodings */
-				{
-					int sp = 0, sf, sft;
-					while (thrift_next_field(b, &sp, &sf, &sft))
-					{
-						switch (sf)
-						{
-							case 1: h.num_values = (int32_t) thrift_read_zigzag(b); break;
-							case 2: h.def_level_encoding = (int) thrift_read_zigzag(b); break;
-							case 3: h.rep_level_encoding = (int) thrift_read_zigzag(b); break;
-							case 4: h.encoding = (int) thrift_read_zigzag(b); break;
-							default: thrift_skip(b, sft); break;
-						}
-					}
-				}
-				break;
-			case 7:	/* dictionary_page_header */
-				{
-					int sp = 0, sf, sft;
-					while (thrift_next_field(b, &sp, &sf, &sft))
-					{
-						switch (sf)
-						{
-							case 1: h.num_values = (int32_t) thrift_read_zigzag(b); break;
-							case 2: h.dict_page_encoding = (int) thrift_read_zigzag(b); break;
-							default: thrift_skip(b, sft); break;
-						}
-					}
-				}
-				break;
-			case 8:	/* data_page_header_v2 */
-				{
-					int sp = 0, sf, sft;
-					while (thrift_next_field(b, &sp, &sf, &sft))
-					{
-						switch (sf)
-						{
-							case 1: h.num_values = (int32_t) thrift_read_zigzag(b); break;
-							case 5: h.encoding = (int) thrift_read_zigzag(b); break;
-							default: thrift_skip(b, sft); break;
-						}
-					}
-					h.type = PAGE_TYPE_DATA_PAGE_V2;
-				}
-				break;
-			default:
-				thrift_skip(b, ft);
-				break;
-		}
-	}
-	return h;
-}
-
-/* ================================================================
- * RLE/bit-packing decoder (for dictionary indices)
- *
- * Parquet uses a hybrid RLE/bit-packing scheme for dictionary page
- * indices.  The format:
- *   - 4-byte LE bit-width header
- *   - then runs: each run prefixed by a varint indicator
- *       if indicator & 1 == 1 -> bit-packed run, length = indicator >> 1
- *       if indicator & 1 == 0 -> RLE run, length = indicator >> 1
- *         followed by the repeated value in ceil(bit_width/8) bytes
- * ================================================================ */
-
-static uint32_t
-rle_read_uint(const uint8_t *data, size_t *pos, int bit_width, int idx)
-{
-	/* Read bit_width bits starting at bit offset idx*bit_width */
-	size_t	byte_offset = (*pos) + ((size_t) idx * bit_width) / 8;
-	int		bit_offset  = ((size_t) idx * bit_width) % 8;
-	uint32_t val = 0;
-	int		bits_left = bit_width;
-	int		out_shift = 0;
-
-	while (bits_left > 0)
-	{
-		int		available = 8 - bit_offset;
-		int		take = available < bits_left ? available : bits_left;
-		uint8_t mask = (take == 8) ? 0xff : ((1 << take) - 1);
-		uint32_t chunk = (data[byte_offset] >> bit_offset) & mask;
-
-		val |= chunk << out_shift;
-		out_shift += take;
-		bits_left -= take;
-		bit_offset = 0;
-		byte_offset++;
-	}
-	return val;
-}
-
-/* Decode n dictionary indices from data, starting at *pos (byte aligned).
- * Returns a palloc'd array of int32. */
-static int32_t *
-decode_rle_hybrid(const uint8_t *data, size_t data_len,
-				  int bit_width, int n_values, size_t *consumed)
-{
-	int32_t	   *out = palloc0(sizeof(int32_t) * n_values);
-	size_t		pos = 0;
-	int			out_idx = 0;
-
-	while (out_idx < n_values && pos < data_len)
-	{
-		uint64_t	indicator;
-		size_t		tmp = pos;
-
-		/* Read varint indicator */
-		indicator = 0;
-		{
-			int		shift = 0;
-			uint8_t b;
-			do {
-				if (tmp >= data_len) goto rle_done;
-				b = data[tmp++];
-				indicator |= (uint64_t)(b & 0x7f) << shift;
-				shift += 7;
-			} while (b & 0x80);
-		}
-		pos = tmp;
-
-		if (indicator & 1)
-		{
-			/* Bit-packed run: (indicator >> 1) groups of 8 values */
-			int		groups = (int)(indicator >> 1);
-			int		i;
-
-			for (i = 0; i < groups * 8 && out_idx < n_values; i++)
-			{
-				out[out_idx++] = (int32_t) rle_read_uint(data, &pos,
-														  bit_width, i);
-			}
-			pos += ((size_t) groups * 8 * bit_width + 7) / 8;
-		}
-		else
-		{
-			/* RLE run: (indicator >> 1) repetitions of a fixed value */
-			int		run_len = (int)(indicator >> 1);
-			int		val_bytes = (bit_width + 7) / 8;
-			uint32_t val = 0;
-			int		i;
-
-			for (i = 0; i < val_bytes && pos < data_len; i++)
-				val |= ((uint32_t) data[pos++]) << (i * 8);
-
-			for (i = 0; i < run_len && out_idx < n_values; i++)
-				out[out_idx++] = (int32_t) val;
-		}
-	}
-
-rle_done:
-	*consumed = pos;
-	return out;
-}
-
-/* ================================================================
- * Column chunk reader
- *
- * Read all pages of one column chunk and return an array of
- * Datum values (one per row in the row group).
- * NULLs are indicated by a parallel bool array.
- * ================================================================ */
-
-typedef struct ColumnData
-{
-	Datum  *values;
-	bool   *nulls;
-	int64_t n;
-} ColumnData;
-
-static ColumnData
-read_column_chunk(FILE *fp, ColumnMeta *col,
-				  int parquet_type, int64_t nrows)
-{
-	ColumnData	cd;
-	uint8_t	   *chunk_buf;
-	uint8_t	   *uncomp_buf = NULL;
-	size_t		chunk_pos;
-	int64_t		rows_read = 0;
-
-	/* Dictionary (for PLAIN_DICTIONARY encoding) */
-	Datum	   *dict         = NULL;
-	int			dict_size    = 0;
-	bool		have_dict    = false;
-
-	cd.values = palloc0(sizeof(Datum) * nrows);
-	cd.nulls  = palloc0(sizeof(bool)  * nrows);
-	cd.n      = nrows;
-
-	/* Read compressed chunk into memory */
-	chunk_buf = palloc(col->total_compressed_size);
-	fseek(fp, col->file_offset, SEEK_SET);
-	if (fread(chunk_buf, 1, col->total_compressed_size, fp) !=
-		(size_t) col->total_compressed_size)
-	{
-		/* Read failure — return all NULLs */
-		for (int i = 0; i < nrows; i++) cd.nulls[i] = true;
-		pfree(chunk_buf);
-		return cd;
-	}
-
-	/* Decompress if needed */
-	if (col->codec == PARQUET_COMPRESS_SNAPPY)
-	{
-		uncomp_buf = palloc(col->total_uncompressed_size);
-		size_t actual = snappy_decompress(
-			chunk_buf, col->total_compressed_size,
-			uncomp_buf, col->total_uncompressed_size);
-
-		if (actual == 0 || actual > (size_t) col->total_uncompressed_size)
-		{
-			/* Decompression failed — return NULLs */
-			for (int i = 0; i < nrows; i++) cd.nulls[i] = true;
-			pfree(chunk_buf);
-			pfree(uncomp_buf);
-			return cd;
-		}
-		pfree(chunk_buf);
-		chunk_buf = uncomp_buf;
-		chunk_pos = 0;
+		JsonEncodeDateTime(buf, TimestampTzGetDatum(ts), TIMESTAMPTZOID, &tz);
 	}
 	else
-		chunk_pos = 0;
+		JsonEncodeDateTime(buf, TimestampGetDatum(ts), TIMESTAMPOID, NULL);
+	appendStringInfoChar(out, '"');
+	appendStringInfoString(out, buf);
+	appendStringInfoChar(out, '"');
+}
 
-	/* Process pages */
-	while (rows_read < nrows && chunk_pos < (size_t) col->total_uncompressed_size)
+static bool
+is_timestamp(PqSchemaNode *n, int *unit, bool *utc)
+{
+	if (n->logical == PQ_LT_TIMESTAMP)
 	{
-		ThriftBuf	pb;
-		ParquetPageHeader	ph;
-		const uint8_t *page_data;
+		*unit = n->ts_unit;
+		*utc = n->ts_utc;
+		return true;
+	}
+	if (n->converted == PQ_CT_TIMESTAMP_MICROS || n->converted == PQ_CT_TIMESTAMP_MILLIS)
+	{
+		*unit = (n->converted == PQ_CT_TIMESTAMP_MILLIS) ? 1 : 2;
+		*utc = true;
+		return true;
+	}
+	return false;
+}
 
-		pb.data = chunk_buf + chunk_pos;
-		pb.pos  = 0;
-		pb.len  = (size_t)(col->total_uncompressed_size) - chunk_pos;
+/*
+ * Render one PLAIN-encoded value at *p (advancing *p); "end" bounds the
+ * buffer; "bitidx" is the index among boolean values in the page.
+ */
+static void
+render_plain(StringInfo out, PqSchemaNode *n, const uint8 **pp,
+			 const uint8 *end, int64 bitidx, const uint8 *bool_base)
+{
+	const uint8 *p = *pp;
 
-		ph = parse_page_header(&pb);
-		chunk_pos += pb.pos;
-
-		page_data = chunk_buf + chunk_pos;
-
-		if (ph.type == PAGE_TYPE_DICTIONARY_PAGE)
-		{
-			/* Build dictionary: nvalues entries of the column type */
-			dict      = palloc0(sizeof(Datum) * ph.num_values);
-			dict_size = ph.num_values;
-			have_dict = true;
-
-			for (int di = 0; di < ph.num_values; di++)
+	switch (n->type)
+	{
+		case PQ_TYPE_BOOLEAN:
+			if (bool_base + bitidx / 8 >= end)
+				pq_corrupt("truncated boolean data");
+			appendStringInfoString(out,
+								   (bool_base[bitidx / 8] >> (bitidx % 8)) & 1 ? "true" : "false");
+			return;
+		case PQ_TYPE_INT32:
 			{
-				switch (parquet_type)
+				int32		v;
+
+				if (end - p < 4)
+					pq_corrupt("truncated INT32 data");
+				v = (int32) read_le32(p);
+				*pp = p + 4;
+				if (n->logical == PQ_LT_DATE || n->converted == PQ_CT_DATE)
 				{
-					case PARQUET_TYPE_INT32:
+					DateADT		d = (DateADT) v - PG_TO_UNIX_DAYS;
+					char		buf[MAXDATELEN + 1];
+
+					if (IS_VALID_DATE(d))
 					{
-						int32_t v;
-						memcpy(&v, page_data + di * 4, 4);
-						dict[di] = Int32GetDatum(v);
-						break;
-					}
-					case PARQUET_TYPE_INT64:
-					{
-						int64_t v;
-						memcpy(&v, page_data + di * 8, 8);
-						dict[di] = Int64GetDatum(v);
-						break;
-					}
-					case PARQUET_TYPE_FLOAT:
-					{
-						float v;
-						memcpy(&v, page_data + di * 4, 4);
-						dict[di] = Float4GetDatum(v);
-						break;
-					}
-					case PARQUET_TYPE_DOUBLE:
-					{
-						double v;
-						memcpy(&v, page_data + di * 8, 8);
-						dict[di] = Float8GetDatum(v);
-						break;
-					}
-					case PARQUET_TYPE_BYTEARRAY:
-					{
-						/* prefix 4-byte LE length then bytes */
-						uint32_t slen;
-						const uint8_t *sp = page_data;
-
-						for (int j = 0; j < di; j++)
-						{
-							memcpy(&slen, sp, 4);
-							sp += 4 + slen;
-						}
-						memcpy(&slen, sp, 4);
-						sp += 4;
-						dict[di] = PointerGetDatum(
-							cstring_to_text_with_len((const char *) sp, slen));
-						break;
-					}
-					default:
-						dict[di] = CStringGetTextDatum("");
-						break;
-				}
-			}
-		}
-		else if (ph.type == PAGE_TYPE_DATA_PAGE ||
-				 ph.type == PAGE_TYPE_DATA_PAGE_V2)
-		{
-			int		nvals = ph.num_values;
-			int		enc   = ph.encoding;
-
-			if (enc == PARQUET_ENCODING_PLAIN_DICTIONARY ||
-				enc == PARQUET_ENCODING_RLE_DICTIONARY)
-			{
-				/* Dictionary indices encoded as RLE/bit-packed */
-				int		bit_width = (have_dict && dict_size > 0)
-										? (int) ceil(log2((double)(dict_size + 1)))
-										: 8;
-				size_t	consumed;
-				int32_t *indices;
-
-				if (bit_width == 0) bit_width = 1;
-
-				/* First byte of page data is the bit width */
-				int page_bit_width = (int) page_data[0];
-				(void) bit_width;
-
-				indices = decode_rle_hybrid(page_data + 1,
-											ph.compressed_page_size - 1,
-											page_bit_width, nvals, &consumed);
-
-				for (int vi = 0; vi < nvals && rows_read < nrows; vi++, rows_read++)
-				{
-					int idx = indices[vi];
-
-					if (have_dict && idx >= 0 && idx < dict_size)
-					{
-						cd.values[rows_read] = dict[idx];
-						cd.nulls[rows_read]  = false;
+						JsonEncodeDateTime(buf, DateADTGetDatum(d), DATEOID, NULL);
+						appendStringInfo(out, "\"%s\"", buf);
 					}
 					else
-						cd.nulls[rows_read] = true;
+						appendStringInfo(out, "%d", v);
+				}
+				else if (n->logical == PQ_LT_INTEGER && !n->int_signed)
+					appendStringInfo(out, "%u", (uint32) v);
+				else
+					appendStringInfo(out, "%d", v);
+				return;
+			}
+		case PQ_TYPE_INT64:
+			{
+				int64		v;
+				int			unit;
+				bool		utc;
+
+				if (end - p < 8)
+					pq_corrupt("truncated INT64 data");
+				v = (int64) read_le64(p);
+				*pp = p + 8;
+				if (is_timestamp(n, &unit, &utc))
+				{
+					int64		us = v;
+
+					if (unit == 1)
+					{
+						if (pg_mul_s64_overflow(v, 1000, &us))
+							us = PG_INT64_MAX;
+					}
+					else if (unit == 3)
+						us = (v >= 0) ? v / 1000 : -((-v + 999) / 1000);
+					append_timestamp(out, us, utc);
+				}
+				else if (n->logical == PQ_LT_INTEGER && !n->int_signed)
+					appendStringInfo(out, UINT64_FORMAT, (uint64) v);
+				else
+					appendStringInfo(out, INT64_FORMAT, v);
+				return;
+			}
+		case PQ_TYPE_INT96:
+			{
+				int64		nanos;
+				int32		jday;
+
+				if (end - p < 12)
+					pq_corrupt("truncated INT96 data");
+				nanos = (int64) read_le64(p);
+				jday = (int32) read_le32(p + 8);
+				*pp = p + 12;
+				append_timestamp(out,
+								 ((int64) jday - UNIX_EPOCH_JDATE) * USECS_PER_DAY + nanos / 1000,
+								 false);
+				return;
+			}
+		case PQ_TYPE_FLOAT:
+			{
+				uint32		u;
+				float		f;
+
+				if (end - p < 4)
+					pq_corrupt("truncated FLOAT data");
+				u = read_le32(p);
+				memcpy(&f, &u, 4);
+				*pp = p + 4;
+				append_double(out, f, true);
+				return;
+			}
+		case PQ_TYPE_DOUBLE:
+			{
+				uint64		u;
+				double		d;
+
+				if (end - p < 8)
+					pq_corrupt("truncated DOUBLE data");
+				u = read_le64(p);
+				memcpy(&d, &u, 8);
+				*pp = p + 8;
+				append_double(out, d, false);
+				return;
+			}
+		case PQ_TYPE_BYTE_ARRAY:
+		case PQ_TYPE_FIXED_LEN_BYTE_ARRAY:
+			{
+				uint32		len;
+				const uint8 *s;
+
+				if (n->type == PQ_TYPE_BYTE_ARRAY)
+				{
+					if (end - p < 4)
+						pq_corrupt("truncated BYTE_ARRAY length");
+					len = read_le32(p);
+					p += 4;
+				}
+				else
+				{
+					if (n->type_length <= 0)
+						pq_corrupt("FIXED_LEN_BYTE_ARRAY without a length");
+					len = n->type_length;
+				}
+				if ((uint64) (end - p) < len)
+					pq_corrupt("truncated byte array data");
+				s = p;
+				*pp = p + len;
+
+				if (n->logical == PQ_LT_UUID && len == 16)
+				{
+					static const char hex[] = "0123456789abcdef";
+					int			i;
+
+					appendStringInfoChar(out, '"');
+					for (i = 0; i < 16; i++)
+					{
+						if (i == 4 || i == 6 || i == 8 || i == 10)
+							appendStringInfoChar(out, '-');
+						appendStringInfoChar(out, hex[s[i] >> 4]);
+						appendStringInfoChar(out, hex[s[i] & 15]);
+					}
+					appendStringInfoChar(out, '"');
+				}
+				else if (n->type == PQ_TYPE_BYTE_ARRAY &&
+						 (n->logical == PQ_LT_STRING || n->logical == PQ_LT_JSON ||
+						  n->logical == 4 /* ENUM */ ||
+						  n->converted == PQ_CT_UTF8 || n->converted == PQ_CT_JSON ||
+						  n->converted == 4 /* ENUM */ ))
+				{
+					char	   *conv = pg_any_to_server((const char *) s, len, PG_UTF8);
+					int			clen = (conv == (const char *) s) ? (int) len : (int) strlen(conv);
+
+					if (n->logical == PQ_LT_JSON || n->converted == PQ_CT_JSON)
+						appendBinaryStringInfo(out, conv, clen);
+					else
+						escape_json_with_len(out, conv, clen);
+				}
+				else
+					append_hex_string(out, s, len);
+				return;
+			}
+		default:
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("unsupported Parquet physical type %d", n->type)));
+	}
+}
+
+/* ================================================================
+ * Column chunk decoding: one JSON fragment per row
+ * ================================================================ */
+
+typedef struct ColFrags
+{
+	StringInfoData buf;
+	int64	   *offs;			/* nrows + 1 */
+	int64		nrows;			/* rows started so far */
+	bool		list_open;
+} ColFrags;
+
+static void
+frag_start_row(ColFrags *cf, int64 max_rows)
+{
+	if (cf->list_open)
+	{
+		appendStringInfoChar(&cf->buf, ']');
+		cf->list_open = false;
+	}
+	if (cf->nrows >= max_rows)
+		pq_corrupt("more rows in column chunk than in row group");
+	cf->offs[cf->nrows++] = cf->buf.len;
+}
+
+static void
+decode_chunk(FILE *fp, const char *filepath, PqChunk *ch, PqLeaf *leaf,
+			 int64 rg_rows, ColFrags *cf)
+{
+	uint8	   *chunk;
+	size_t		pos = 0;
+	StringInfoData *dict = NULL;
+	int			ndict = 0;
+	int32	   *rep = NULL;
+	int32	   *def = NULL;
+	int32	   *idx = NULL;
+	int			cap = 0;
+	uint8	   *ubuf = NULL;
+	size_t		ubuf_cap = 0;
+
+	initStringInfo(&cf->buf);
+	cf->offs = palloc(sizeof(int64) * (rg_rows + 1));
+	cf->nrows = 0;
+	cf->list_open = false;
+
+	if (ch->size < 0 || (Size) ch->size > MaxAllocSize - 1 || ch->start < 4)
+		pq_corrupt("bad column chunk size or offset");
+	chunk = palloc(ch->size + 1);
+	if (fseeko(fp, (off_t) ch->start, SEEK_SET) != 0 ||
+		fread(chunk, 1, ch->size, fp) != (size_t) ch->size)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read column chunk from \"%s\"", filepath)));
+
+	while (pos < (size_t) ch->size)
+	{
+		ThriftReader tr;
+		PqPageHeader h;
+		const uint8 *page;
+		const uint8 *vals;
+		const uint8 *vend;
+		int			n;
+		int			i;
+		int64		nnonnull;
+
+		tr.data = chunk + pos;
+		tr.pos = 0;
+		tr.len = ch->size - pos;
+		parse_page_header(&tr, &h);
+		pos += tr.pos;
+		if ((size_t) h.csize > ch->size - pos)
+			pq_corrupt("page extends past column chunk");
+		page = chunk + pos;
+		pos += h.csize;
+
+		if (h.type != PQ_PAGE_DATA && h.type != PQ_PAGE_DATA_V2 &&
+			h.type != PQ_PAGE_DICTIONARY)
+			continue;			/* index pages etc. */
+
+		/* decompress the part of the page that is compressed */
+		{
+			size_t		skip = (h.type == PQ_PAGE_DATA_V2) ? (size_t) h.def_len + h.rep_len : 0;
+			bool		compressed = (ch->codec == PQ_CODEC_SNAPPY) &&
+				(h.type != PQ_PAGE_DATA_V2 || h.is_compressed);
+
+			if (skip > (size_t) h.csize || skip > (size_t) h.usize)
+				pq_corrupt("level lengths exceed page size");
+			if (compressed)
+			{
+				size_t		need = h.usize;
+
+				if (need + 1 > ubuf_cap)
+				{
+					ubuf_cap = need + 1;
+					ubuf = ubuf ? repalloc(ubuf, ubuf_cap) : palloc(ubuf_cap);
+				}
+				memcpy(ubuf, page, skip);
+				if (!snappy_decompress(page + skip, h.csize - skip,
+									   ubuf + skip, h.usize - skip))
+					pq_corrupt("invalid Snappy data");
+				page = ubuf;
+				vend = ubuf + h.usize;
+			}
+			else
+				vend = page + h.csize;
+		}
+
+		if (h.type == PQ_PAGE_DICTIONARY)
+		{
+			const uint8 *p = page;
+
+			if (h.encoding != PQ_ENC_PLAIN && h.encoding != PQ_ENC_PLAIN_DICTIONARY)
+				pq_corrupt("unsupported dictionary page encoding");
+			ndict = h.num_values;
+			dict = palloc(sizeof(StringInfoData) * Max(ndict, 1));
+			for (i = 0; i < ndict; i++)
+			{
+				initStringInfo(&dict[i]);
+				render_plain(&dict[i], leaf->node, &p, vend, i, page);
+			}
+			continue;
+		}
+
+		n = h.num_values;
+		if (n > cap)
+		{
+			cap = n;
+			rep = rep ? repalloc(rep, sizeof(int32) * cap) : palloc(sizeof(int32) * cap);
+			def = def ? repalloc(def, sizeof(int32) * cap) : palloc(sizeof(int32) * cap);
+			idx = idx ? repalloc(idx, sizeof(int32) * cap) : palloc(sizeof(int32) * cap);
+		}
+
+		/* levels */
+		{
+			const uint8 *p = page;
+
+			if (h.type == PQ_PAGE_DATA)
+			{
+				if (leaf->max_rep > 0)
+				{
+					uint32		l;
+
+					if (vend - p < 4)
+						pq_corrupt("truncated repetition levels");
+					l = read_le32(p);
+					p += 4;
+					if ((uint64) (vend - p) < l)
+						pq_corrupt("truncated repetition levels");
+					decode_hybrid(p, l, bit_width_of(leaf->max_rep), n, rep);
+					p += l;
+				}
+				if (leaf->max_def > 0)
+				{
+					uint32		l;
+
+					if (vend - p < 4)
+						pq_corrupt("truncated definition levels");
+					l = read_le32(p);
+					p += 4;
+					if ((uint64) (vend - p) < l)
+						pq_corrupt("truncated definition levels");
+					decode_hybrid(p, l, bit_width_of(leaf->max_def), n, def);
+					p += l;
 				}
 			}
 			else
 			{
-				/* PLAIN encoding */
-				const uint8_t *p = page_data;
-
-				for (int vi = 0; vi < nvals && rows_read < nrows; vi++, rows_read++)
-				{
-					cd.nulls[rows_read] = false;
-
-					switch (parquet_type)
-					{
-						case PARQUET_TYPE_BOOLEAN:
-						{
-							int byte_pos = vi / 8;
-							int bit_pos  = vi % 8;
-							bool v = (page_data[byte_pos] >> bit_pos) & 1;
-							cd.values[rows_read] = BoolGetDatum(v);
-							break;
-						}
-						case PARQUET_TYPE_INT32:
-						{
-							int32_t v;
-							memcpy(&v, p, 4); p += 4;
-							cd.values[rows_read] = Int32GetDatum(v);
-							break;
-						}
-						case PARQUET_TYPE_INT64:
-						{
-							int64_t v;
-							memcpy(&v, p, 8); p += 8;
-							cd.values[rows_read] = Int64GetDatum(v);
-							break;
-						}
-						case PARQUET_TYPE_FLOAT:
-						{
-							float v;
-							memcpy(&v, p, 4); p += 4;
-							cd.values[rows_read] = Float4GetDatum(v);
-							break;
-						}
-						case PARQUET_TYPE_DOUBLE:
-						{
-							double v;
-							memcpy(&v, p, 8); p += 8;
-							cd.values[rows_read] = Float8GetDatum(v);
-							break;
-						}
-						case PARQUET_TYPE_BYTEARRAY:
-						{
-							uint32_t slen;
-							memcpy(&slen, p, 4); p += 4;
-							cd.values[rows_read] = PointerGetDatum(
-								cstring_to_text_with_len((const char *) p, slen));
-							p += slen;
-							break;
-						}
-						default:
-							cd.nulls[rows_read] = true;
-							break;
-					}
-				}
+				if (leaf->max_rep > 0)
+					decode_hybrid(p, h.rep_len, bit_width_of(leaf->max_rep), n, rep);
+				p += h.rep_len;
+				if (leaf->max_def > 0)
+					decode_hybrid(p, h.def_len, bit_width_of(leaf->max_def), n, def);
+				p += h.def_len;
 			}
+			if (leaf->max_rep == 0)
+				memset(rep, 0, sizeof(int32) * n);
+			if (leaf->max_def == 0)
+				for (i = 0; i < n; i++)
+					def[i] = 0;
+			vals = p;
 		}
 
-		chunk_pos += ph.compressed_page_size;
+		nnonnull = 0;
+		for (i = 0; i < n; i++)
+		{
+			if (def[i] > leaf->max_def || rep[i] > leaf->max_rep)
+				pq_corrupt("level out of range");
+			if (def[i] == leaf->max_def)
+				nnonnull++;
+		}
+
+		/* value decoding setup */
+		if (h.encoding == PQ_ENC_PLAIN_DICTIONARY || h.encoding == PQ_ENC_RLE_DICTIONARY)
+		{
+			int			bw;
+
+			if (dict == NULL)
+				pq_corrupt("dictionary-encoded page without dictionary");
+			if (nnonnull > 0)
+			{
+				if (vals >= vend)
+					pq_corrupt("truncated dictionary indices");
+				bw = vals[0];
+				decode_hybrid(vals + 1, vend - vals - 1, bw, (int) nnonnull, idx);
+				for (i = 0; i < nnonnull; i++)
+					if (idx[i] < 0 || idx[i] >= ndict)
+						pq_corrupt("dictionary index out of range");
+			}
+		}
+		else if (h.encoding == PQ_ENC_RLE && leaf->node->type == PQ_TYPE_BOOLEAN)
+		{
+			const uint8 *p = vals;
+			uint32		l;
+
+			/* RLE-encoded values carry a 4-byte length in v1 and v2 pages */
+			if (vend - p < 4)
+				pq_corrupt("truncated boolean RLE data");
+			l = read_le32(p);
+			p += 4;
+			if ((uint64) (vend - p) < l)
+				pq_corrupt("truncated boolean RLE data");
+			decode_hybrid(p, l, 1, (int) nnonnull, idx);
+		}
+		else if (h.encoding != PQ_ENC_PLAIN)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("Parquet encoding %d in column \"%s\" is not supported",
+							h.encoding, leaf->name),
+					 errhint("Supported encodings are PLAIN, PLAIN_DICTIONARY, RLE_DICTIONARY and RLE (booleans).")));
+
+		/* assemble rows */
+		{
+			const uint8 *p = vals;
+			int64		vi = 0;
+
+			for (i = 0; i < n; i++)
+			{
+				bool		is_value = (def[i] == leaf->max_def);
+
+				if (leaf->max_rep == 0)
+				{
+					frag_start_row(cf, rg_rows);
+				}
+				else if (rep[i] == 0)
+				{
+					frag_start_row(cf, rg_rows);
+					if (def[i] < leaf->list_def - 1)
+					{
+						appendStringInfoString(&cf->buf, "null");
+						continue;
+					}
+					if (def[i] == leaf->list_def - 1)
+					{
+						appendStringInfoString(&cf->buf, "[]");
+						continue;
+					}
+					appendStringInfoChar(&cf->buf, '[');
+					cf->list_open = true;
+				}
+				else
+				{
+					if (!cf->list_open || def[i] < leaf->list_def)
+						pq_corrupt("bad repetition level sequence");
+					appendStringInfoChar(&cf->buf, ',');
+				}
+
+				if (!is_value)
+				{
+					appendStringInfoString(&cf->buf, "null");
+					continue;
+				}
+
+				if (h.encoding == PQ_ENC_PLAIN_DICTIONARY || h.encoding == PQ_ENC_RLE_DICTIONARY)
+					appendBinaryStringInfo(&cf->buf, dict[idx[vi]].data, dict[idx[vi]].len);
+				else if (h.encoding == PQ_ENC_RLE)
+					appendStringInfoString(&cf->buf, idx[vi] ? "true" : "false");
+				else
+					render_plain(&cf->buf, leaf->node, &p, vend, vi, vals);
+				vi++;
+			}
+		}
 	}
 
-	/* Mark any remaining rows as NULL */
-	for (; rows_read < nrows; rows_read++)
-		cd.nulls[rows_read] = true;
-
-	pfree(chunk_buf);
-	return cd;
+	if (cf->list_open)
+	{
+		appendStringInfoChar(&cf->buf, ']');
+		cf->list_open = false;
+	}
+	/* rows missing from the chunk read as null */
+	while (cf->nrows < rg_rows)
+	{
+		cf->offs[cf->nrows++] = cf->buf.len;
+		appendStringInfoString(&cf->buf, "null");
+	}
+	cf->offs[rg_rows] = cf->buf.len;
+	pfree(chunk);
 }
 
 /* ================================================================
- * read_parquet_full — SRF entry point
- *
- * Uses the multi-call SRF API.  On the first call we:
- *   1. Validate and open the file
- *   2. Parse the footer
- *   3. Read all column chunks for the first row group
- *   4. Emit rows one by one
- *
- * On subsequent calls we advance row_idx and, when a row group is
- * exhausted, read the next one.
+ * read_parquet_full -- materialized SRF
  * ================================================================ */
-
-typedef struct ParquetReaderState
-{
-	ParquetFile	   *pf;
-	FILE		   *fp;
-
-	/* Current row group */
-	int				rg_idx;
-	int64_t			row_idx;	/* row within current row group */
-	int64_t			rg_nrows;
-
-	/* Column data for current row group */
-	ColumnData	   *col_data;
-
-	/* jsonb output options (from options jsonb) */
-	bool			columns_as_text; /* cast everything to text */
-} ParquetReaderState;
-
 Datum
 read_parquet_full(PG_FUNCTION_ARGS)
 {
-	FuncCallContext		   *funcctx;
-	ParquetReaderState	   *state;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	char	   *filepath = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	FILE	   *fp;
+	uint8		tail[8];
+	uint8		magic[4];
+	off_t		file_size;
+	uint32		footer_len;
+	uint8	   *footer;
+	PqFileMeta *fm;
+	MemoryContext rgcxt;
+	MemoryContext rowcxt;
+	MemoryContext oldcxt;
+	StringInfoData row;
+	int			r;
+	char	  **keys;
 
-	if (SRF_IS_FIRSTCALL())
+	/* options jsonb (arg 1) is reserved for future use */
+
+	if (!parquet_validate_path(filepath))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("file path \"%s\" is not in an allowed directory",
+						filepath)));
+
+	InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+
+	fp = AllocateFile(filepath, PG_BINARY_R);
+	if (fp == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", filepath)));
+
+	if (fread(magic, 1, 4, fp) != 4 || memcmp(magic, "PAR1", 4) != 0 ||
+		fseeko(fp, 0, SEEK_END) != 0 || (file_size = ftello(fp)) < 12)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("\"%s\" is not a valid Parquet file", filepath)));
+
+	if (fseeko(fp, file_size - 8, SEEK_SET) != 0 ||
+		fread(tail, 1, 8, fp) != 8 || memcmp(tail + 4, "PAR1", 4) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("corrupted Parquet footer in \"%s\"", filepath)));
+
+	footer_len = read_le32(tail);
+	if (footer_len == 0 || (off_t) footer_len > file_size - 12 ||
+		footer_len > MaxAllocSize - 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("invalid Parquet footer length %u", footer_len)));
+
+	footer = palloc(footer_len);
+	if (fseeko(fp, file_size - 8 - footer_len, SEEK_SET) != 0 ||
+		fread(footer, 1, footer_len, fp) != footer_len)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read Parquet footer of \"%s\"", filepath)));
+
+	fm = parse_footer(footer, (int) footer_len);
+	pfree(footer);
+
+	/* pre-render the JSON object keys */
+	keys = palloc(sizeof(char *) * Max(fm->nleaves, 1));
+	for (r = 0; r < fm->nleaves; r++)
 	{
-		MemoryContext	oldcxt;
-		char		   *filepath;
-		long			file_size;
-		uint8_t			footer_len_buf[4];
-		int32_t			footer_len;
-		uint8_t		   *footer_buf;
-		char			tail_magic[4];
-		ParquetFile	   *pf;
+		StringInfoData k;
+		char	   *nm = fm->leaves[r].name;
+		char	   *conv = pg_any_to_server(nm, strlen(nm), PG_UTF8);
 
-		funcctx = SRF_FIRSTCALL_INIT();
-		oldcxt  = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		initStringInfo(&k);
+		escape_json(&k, conv);
+		appendStringInfoChar(&k, ':');
+		keys[r] = k.data;
+	}
 
-		filepath = text_to_cstring(PG_GETARG_TEXT_PP(0));
-		/* options jsonb (arg 1) is reserved for future use */
+	rgcxt = AllocSetContextCreate(CurrentMemoryContext, "read_parquet row group",
+								  ALLOCSET_DEFAULT_SIZES);
+	rowcxt = AllocSetContextCreate(CurrentMemoryContext, "read_parquet row",
+								   ALLOCSET_DEFAULT_SIZES);
+	initStringInfo(&row);
 
-		if (!parquet_validate_path(filepath))
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("file path \"%s\" is not in an allowed directory",
-							filepath)));
+	for (r = 0; r < fm->nrgs; r++)
+	{
+		PqRowGroup *rg = &fm->rgs[r];
+		ColFrags   *frags;
+		int64		i;
+		int			c;
 
-		state = palloc0(sizeof(ParquetReaderState));
-		state->fp = fopen(filepath, "rb");
+		if (rg->num_rows <= 0)
+			continue;
+		if ((Size) rg->num_rows > MaxAllocSize / sizeof(int64) - 1)
+			pq_corrupt("row group too large");
 
-		if (!state->fp)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m", filepath)));
-
-		/* Validate magic */
-		{
-			char magic[4];
-			if (fread(magic, 1, 4, state->fp) != 4 ||
-				memcmp(magic, "PAR1", 4) != 0)
-			{
-				fclose(state->fp);
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_EXCEPTION),
-						 errmsg("\"%s\" is not a valid Parquet file", filepath)));
-			}
-		}
-
-		fseek(state->fp, 0, SEEK_END);
-		file_size = ftell(state->fp);
-
-		/* Read footer length (4 bytes before trailing PAR1) */
-		fseek(state->fp, file_size - 8, SEEK_SET);
-		if (fread(footer_len_buf, 1, 4, state->fp) != 4)
-		{
-			fclose(state->fp);
-			ereport(ERROR, (errmsg("could not read Parquet footer length")));
-		}
-
-		footer_len = (int32_t)((uint32_t) footer_len_buf[0] |
-							   ((uint32_t) footer_len_buf[1] << 8) |
-							   ((uint32_t) footer_len_buf[2] << 16) |
-							   ((uint32_t) footer_len_buf[3] << 24));
-
-		/* Validate trailing magic */
-		fseek(state->fp, file_size - 4, SEEK_SET);
-		if (fread(tail_magic, 1, 4, state->fp) != 4 ||
-			memcmp(tail_magic, "PAR1", 4) != 0)
-		{
-			fclose(state->fp);
-			ereport(ERROR, (errmsg("corrupted Parquet footer in \"%s\"", filepath)));
-		}
-
-		if (footer_len <= 0 || footer_len > file_size - 12)
-		{
-			fclose(state->fp);
-			ereport(ERROR, (errmsg("invalid Parquet footer length %d", footer_len)));
-		}
-
-		/* Read and parse footer */
-		footer_buf = palloc(footer_len);
-		fseek(state->fp, file_size - 8 - footer_len, SEEK_SET);
-		if (fread(footer_buf, 1, footer_len, state->fp) != (size_t) footer_len)
-		{
-			fclose(state->fp);
-			ereport(ERROR, (errmsg("could not read Parquet footer")));
-		}
-
-		pf = parse_parquet_footer(footer_buf, footer_len);
-		pfree(footer_buf);
-
-		if (pf->num_rows_total == 0 || pf->nrow_groups == 0)
-		{
-			fclose(state->fp);
-			MemoryContextSwitchTo(oldcxt);
-			funcctx->max_calls = 0;
-			SRF_RETURN_DONE(funcctx);
-		}
-
-		state->pf      = pf;
-		state->rg_idx  = 0;
-		state->row_idx = 0;
-
-		/* Read first row group columns */
-		{
-			RowGroup *rg = &pf->row_groups[0];
-			int		  c;
-
-			state->rg_nrows  = rg->num_rows;
-			state->col_data  = palloc(sizeof(ColumnData) * pf->nschema_cols);
-
-			for (c = 0; c < pf->nschema_cols && c < rg->ncols; c++)
-			{
-				int ptype = (c < pf->nschema_cols) ? pf->col_types[c]
-												   : PARQUET_TYPE_BYTEARRAY;
-				state->col_data[c] = read_column_chunk(
-					state->fp, &rg->columns[c], ptype, rg->num_rows);
-			}
-		}
-
-		funcctx->user_fctx = state;
-		funcctx->max_calls = (uint64) pf->num_rows_total;
-
+		oldcxt = MemoryContextSwitchTo(rgcxt);
+		frags = palloc0(sizeof(ColFrags) * Max(fm->nleaves, 1));
+		for (c = 0; c < fm->nleaves; c++)
+			decode_chunk(fp, filepath, &rg->cols[c], &fm->leaves[c],
+						 rg->num_rows, &frags[c]);
 		MemoryContextSwitchTo(oldcxt);
-	}
 
-	funcctx = SRF_PERCALL_SETUP();
-	state   = (ParquetReaderState *) funcctx->user_fctx;
-
-	/* Check if we have more rows */
-	if (funcctx->call_cntr >= funcctx->max_calls)
-	{
-		if (state->fp)
-			fclose(state->fp);
-		SRF_RETURN_DONE(funcctx);
-	}
-
-	/* Advance to next row group if needed */
-	if (state->row_idx >= state->rg_nrows)
-	{
-		state->rg_idx++;
-
-		if (state->rg_idx >= state->pf->nrow_groups)
+		for (i = 0; i < rg->num_rows; i++)
 		{
-			if (state->fp)
-				fclose(state->fp);
-			SRF_RETURN_DONE(funcctx);
-		}
+			Datum		val;
+			bool		isnull = false;
 
-		RowGroup *rg = &state->pf->row_groups[state->rg_idx];
-		int		  c;
-
-		state->rg_nrows  = rg->num_rows;
-		state->row_idx   = 0;
-		state->col_data  = palloc(sizeof(ColumnData) * state->pf->nschema_cols);
-
-		for (c = 0; c < state->pf->nschema_cols && c < rg->ncols; c++)
-		{
-			int ptype = state->pf->col_types[c];
-			state->col_data[c] = read_column_chunk(
-				state->fp, &rg->columns[c], ptype, rg->num_rows);
-		}
-	}
-
-	/* Build jsonb object for current row */
-	{
-		StringInfoData	jbuf;
-		Datum			result;
-		int				c;
-		int64_t			ri = state->row_idx;
-		ParquetFile	   *pf = state->pf;
-
-		initStringInfo(&jbuf);
-		appendStringInfoChar(&jbuf, '{');
-
-		for (c = 0; c < pf->nschema_cols; c++)
-		{
-			char		   *colname = pf->col_names[c];
-			ColumnData	   *cd     = &state->col_data[c];
-			bool			is_null = (ri >= cd->n) || cd->nulls[ri];
-
-			if (c > 0)
-				appendStringInfoChar(&jbuf, ',');
-
-			appendStringInfoChar(&jbuf, '"');
-			appendStringInfoString(&jbuf, colname);
-			appendStringInfoString(&jbuf, "\":");
-
-			if (is_null)
+			resetStringInfo(&row);
+			appendStringInfoChar(&row, '{');
+			for (c = 0; c < fm->nleaves; c++)
 			{
-				appendStringInfoString(&jbuf, "null");
-			}
-			else
-			{
-				switch (pf->col_types[c])
-				{
-					case PARQUET_TYPE_BOOLEAN:
-						appendStringInfoString(&jbuf,
-							DatumGetBool(cd->values[ri]) ? "true" : "false");
-						break;
-					case PARQUET_TYPE_INT32:
-						appendStringInfo(&jbuf, "%d",
-										 DatumGetInt32(cd->values[ri]));
-						break;
-					case PARQUET_TYPE_INT64:
-						appendStringInfo(&jbuf, INT64_FORMAT,
-										 DatumGetInt64(cd->values[ri]));
-						break;
-					case PARQUET_TYPE_FLOAT:
-						appendStringInfo(&jbuf, "%g",
-										 (double) DatumGetFloat4(cd->values[ri]));
-						break;
-					case PARQUET_TYPE_DOUBLE:
-						appendStringInfo(&jbuf, "%g",
-										 DatumGetFloat8(cd->values[ri]));
-						break;
-					case PARQUET_TYPE_BYTEARRAY:
-					default:
-					{
-						text   *t   = DatumGetTextP(cd->values[ri]);
-						int		len = VARSIZE_ANY_EXHDR(t);
-						char   *sp  = VARDATA_ANY(t);
-						int		i;
+				ColFrags   *cf = &frags[c];
 
-						appendStringInfoChar(&jbuf, '"');
-						for (i = 0; i < len; i++)
-						{
-							unsigned char ch = (unsigned char) sp[i];
-							if (ch == '"')
-								appendStringInfoString(&jbuf, "\\\"");
-							else if (ch == '\\')
-								appendStringInfoString(&jbuf, "\\\\");
-							else if (ch < 0x20)
-								appendStringInfo(&jbuf, "\\u%04x", ch);
-							else
-								appendStringInfoCharMacro(&jbuf, (char) ch);
-						}
-						appendStringInfoChar(&jbuf, '"');
-						break;
-					}
-				}
+				if (c > 0)
+					appendStringInfoChar(&row, ',');
+				appendStringInfoString(&row, keys[c]);
+				appendBinaryStringInfo(&row, cf->buf.data + cf->offs[i],
+									   (int) (cf->offs[i + 1] - cf->offs[i]));
 			}
+			appendStringInfoChar(&row, '}');
+
+			/* jsonb_in leaves parser garbage behind; contain it per row */
+			oldcxt = MemoryContextSwitchTo(rowcxt);
+			val = DirectFunctionCall1(jsonb_in, CStringGetDatum(row.data));
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, &val, &isnull);
+			MemoryContextSwitchTo(oldcxt);
+			MemoryContextReset(rowcxt);
 		}
-
-		appendStringInfoChar(&jbuf, '}');
-
-		result = DirectFunctionCall1(jsonb_in, CStringGetDatum(jbuf.data));
-		pfree(jbuf.data);
-
-		state->row_idx++;
-
-		SRF_RETURN_NEXT(funcctx, result);
+		MemoryContextReset(rgcxt);
+		CHECK_FOR_INTERRUPTS();
 	}
+
+	FreeFile(fp);
+	MemoryContextDelete(rowcxt);
+	MemoryContextDelete(rgcxt);
+	return (Datum) 0;
 }

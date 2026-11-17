@@ -20,5 +20,17 @@ contrib_targets += alohadb_temporal
 install_data(
   'alohadb_temporal.control',
   'alohadb_temporal--1.0.sql',
+  'alohadb_temporal--1.0--1.1.sql',
   kwargs: contrib_data_args,
 )
+
+tests += {
+  'name': 'alohadb_temporal',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'temporal',
+    ],
+  },
+}

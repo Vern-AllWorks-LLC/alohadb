@@ -16,6 +16,8 @@
 
 #include "access/brin.h"
 #include "access/gin.h"
+#include "access/hnsw_guc.h"
+#include "access/ivfflat_guc.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/session.h"
@@ -154,6 +156,12 @@ static const struct
 	},
 	{
 		"parallel_vacuum_main", parallel_vacuum_main
+	},
+	{
+		"HnswParallelBuildMain", HnswParallelBuildMain
+	},
+	{
+		"IvfflatParallelBuildMain", IvfflatParallelBuildMain
 	}
 };
 

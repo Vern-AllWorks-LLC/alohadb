@@ -1,0 +1,5 @@
+# alohadb_bitemporal extension
+comment = 'SQL:2011-style bitemporal tables (application time + system time) with sequenced modifications'
+default_version = '1.0'
+relocatable = false
+requires = 'plpgsql'

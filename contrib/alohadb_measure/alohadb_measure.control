@@ -1,0 +1,5 @@
+# alohadb_measure extension
+comment = 'Measurements with units, standard uncertainty and provenance tracking'
+default_version = '1.0'
+module_pathname = '$libdir/alohadb_measure'
+relocatable = false

@@ -1,0 +1,278 @@
+--
+-- alohadb_graph: graph definition, enforced schema, validation
+--
+CREATE EXTENSION alohadb_graph;
+CREATE TABLE person (id bigint PRIMARY KEY, name text, age int);
+CREATE TABLE company (id bigint PRIMARY KEY, name text);
+CREATE TABLE knows (src bigint, dst bigint, w float8,
+                    since timestamptz, until timestamptz);
+CREATE TABLE works_at (person_id bigint, company_id bigint);
+CREATE TABLE no_pk (id bigint);
+INSERT INTO person VALUES (1, 'ann', 30), (2, 'bob', 40), (3, 'cy', 25);
+INSERT INTO company VALUES (101, 'acme'), (102, 'globex');
+INSERT INTO knows VALUES (1, 2, 1.0, '2024-01-01', NULL), (2, 3, 2.0, '2024-01-02', '2024-06-01');
+INSERT INTO works_at VALUES (1, 101), (2, 102), (3, 102);
+SELECT graph_create('social');
+ graph_create 
+--------------
+ 
+(1 row)
+
+SELECT graph_create('social');                                     -- error: exists
+ERROR:  graph "social" already exists
+CONTEXT:  PL/pgSQL function graph_create(text) line 7 at RAISE
+SELECT graph_add_vertex_label('social', 'person', 'person');
+ graph_add_vertex_label 
+------------------------
+ 
+(1 row)
+
+SELECT graph_add_vertex_label('social', 'company', 'company', 'id');
+ graph_add_vertex_label 
+------------------------
+ 
+(1 row)
+
+SELECT graph_add_vertex_label('social', 'bad', 'no_pk');           -- error: no PK
+ERROR:  vertex key column no_pk.id must have a PRIMARY KEY or UNIQUE constraint
+HINT:  Edges reference vertex keys through foreign keys.
+CONTEXT:  PL/pgSQL function graph_add_vertex_label(text,text,regclass,name) line 30 at RAISE
+SELECT graph_add_vertex_label('social', 'person', 'company');      -- error: dup label
+ERROR:  label "person" already exists in graph "social"
+CONTEXT:  PL/pgSQL function graph_add_vertex_label(text,text,regclass,name) line 16 at RAISE
+SELECT graph_add_vertex_label('social', 'x', 'person', 'name');    -- error: key type
+ERROR:  vertex key column person.name must be bigint, integer or smallint (is text)
+CONTEXT:  PL/pgSQL function graph_add_vertex_label(text,text,regclass,name) line 21 at RAISE
+SELECT graph_add_vertex_label('nosuch', 'x', 'person');            -- error: no graph
+ERROR:  graph "nosuch" does not exist
+CONTEXT:  PL/pgSQL function graph_add_vertex_label(text,text,regclass,name) line 10 at RAISE
+SELECT graph_add_edge_label('social', 'knows', 'knows', 'src', 'person', 'dst', 'person',
+                            weight_column => 'w', valid_from_column => 'since',
+                            valid_to_column => 'until');
+ graph_add_edge_label 
+----------------------
+ 
+(1 row)
+
+SELECT graph_add_edge_label('social', 'works_at', 'works_at', 'person_id', 'person',
+                            'company_id', 'company', on_delete_cascade => true);
+ graph_add_edge_label 
+----------------------
+ 
+(1 row)
+
+SELECT graph_add_edge_label('social', 'oops', 'knows', 'src', 'person', 'nope', 'person'); -- error
+ERROR:  column "nope" does not exist in table knows
+CONTEXT:  PL/pgSQL function _graph_column_type(regclass,name) line 10 at RAISE
+PL/pgSQL function graph_add_edge_label(text,text,regclass,name,text,name,text,name,name,name,boolean,boolean,boolean) line 35 at FOREACH over array
+SELECT graph_add_edge_label('social', 'oops', 'knows', 'src', 'robot', 'dst', 'person');   -- error
+ERROR:  vertex label "robot" does not exist in graph "social"
+CONTEXT:  PL/pgSQL function graph_add_edge_label(text,text,regclass,name,text,name,text,name,name,name,boolean,boolean,boolean) line 27 at RAISE
+SELECT kind, label, table_name, definition FROM graph_describe('social');
+  kind  |  label   | table_name |                                                                                                                                                                     definition                                                                                                                                                                     
+--------+----------+------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ vertex | company  | company    | {"key_column": "id"}
+ vertex | person   | person     | {"key_column": "id"}
+ edge   | knows    | knows      | {"directed": true, "enforced": true, "dst_label": "person", "src_label": "person", "dst_column": "dst", "src_column": "src", "constraints": ["graph_social_knows_src_fk", "graph_social_knows_dst_fk", "graph_social_knows_valid_ck"], "weight_column": "w", "valid_to_column": "until", "on_delete_cascade": false, "valid_from_column": "since"}
+ edge   | works_at | works_at   | {"directed": true, "enforced": true, "dst_label": "company", "src_label": "person", "dst_column": "company_id", "src_column": "person_id", "constraints": ["graph_social_works_at_src_fk", "graph_social_works_at_dst_fk"], "on_delete_cascade": true}
+(4 rows)
+
+-- installed constraints
+SELECT conname, contype, pg_get_constraintdef(oid)
+  FROM pg_constraint WHERE conrelid IN ('knows'::regclass, 'works_at'::regclass)
+ ORDER BY conname;
+           conname            | contype |                       pg_get_constraintdef                        
+------------------------------+---------+-------------------------------------------------------------------
+ graph_social_knows_dst_fk    | f       | FOREIGN KEY (dst) REFERENCES person(id)
+ graph_social_knows_src_fk    | f       | FOREIGN KEY (src) REFERENCES person(id)
+ graph_social_knows_valid_ck  | c       | CHECK ((since < until))
+ graph_social_works_at_dst_fk | f       | FOREIGN KEY (company_id) REFERENCES company(id) ON DELETE CASCADE
+ graph_social_works_at_src_fk | f       | FOREIGN KEY (person_id) REFERENCES person(id) ON DELETE CASCADE
+ knows_dst_not_null           | n       | NOT NULL dst
+ knows_src_not_null           | n       | NOT NULL src
+ works_at_company_id_not_null | n       | NOT NULL company_id
+ works_at_person_id_not_null  | n       | NOT NULL person_id
+(9 rows)
+
+-- enforced schema: an edge can never point to a missing vertex
+INSERT INTO knows VALUES (1, 99, 1, '2024-01-01', NULL);           -- error: FK
+ERROR:  insert or update on table "knows" violates foreign key constraint "graph_social_knows_dst_fk"
+DETAIL:  Key (dst)=(99) is not present in table "person".
+INSERT INTO knows VALUES (NULL, 2, 1, '2024-01-01', NULL);         -- error: NOT NULL
+ERROR:  null value in column "src" of relation "knows" violates not-null constraint
+DETAIL:  Failing row contains (null, 2, 1, Mon Jan 01 00:00:00 2024 PST, null).
+INSERT INTO knows VALUES (1, 3, 1, '2024-05-01', '2024-01-01');    -- error: interval
+ERROR:  new row for relation "knows" violates check constraint "graph_social_knows_valid_ck"
+DETAIL:  Failing row contains (1, 3, 1, Wed May 01 00:00:00 2024 PDT, Mon Jan 01 00:00:00 2024 PST).
+INSERT INTO works_at VALUES (1, 103);                              -- error: FK
+ERROR:  insert or update on table "works_at" violates foreign key constraint "graph_social_works_at_dst_fk"
+DETAIL:  Key (company_id)=(103) is not present in table "company".
+DELETE FROM person WHERE id = 3;                                   -- error: referenced
+ERROR:  update or delete on table "person" violates foreign key constraint "graph_social_knows_dst_fk" on table "knows"
+DETAIL:  Key (id)=(3) is still referenced from table "knows".
+-- ON DELETE CASCADE removes the edges of a deleted company
+DELETE FROM company WHERE id = 102;
+SELECT * FROM works_at ORDER BY person_id;
+ person_id | company_id 
+-----------+------------
+         1 |        101
+(1 row)
+
+-- property rules
+SELECT graph_add_property_rule('social', 'person', 'name');
+ graph_add_property_rule 
+-------------------------
+ 
+(1 row)
+
+SELECT graph_add_property_rule('social', 'person', 'age', false, 'age >= 0');
+ graph_add_property_rule 
+-------------------------
+ 
+(1 row)
+
+SELECT graph_add_property_rule('social', 'person', 'age', false, 'true; DROP TABLE person'); -- error
+ERROR:  check_expr must be a single SQL expression (no ";")
+CONTEXT:  PL/pgSQL function graph_add_property_rule(text,text,name,boolean,text) line 21 at RAISE
+SELECT graph_add_property_rule('social', 'nolabel', 'age');        -- error
+ERROR:  label "nolabel" does not exist in graph "social"
+CONTEXT:  PL/pgSQL function graph_add_property_rule(text,text,name,boolean,text) line 16 at RAISE
+INSERT INTO person VALUES (4, NULL, 20);                           -- error: required
+ERROR:  null value in column "name" of relation "person" violates not-null constraint
+DETAIL:  Failing row contains (4, null, 20).
+INSERT INTO person VALUES (4, 'dee', -1);                          -- error: check
+ERROR:  new row for relation "person" violates check constraint "graph_social_person_age_ck"
+DETAIL:  Failing row contains (4, dee, -1).
+INSERT INTO person VALUES (4, 'dee', 50);
+-- clean data validates
+SELECT * FROM graph_validate('social');
+ kind | label | detail | violations 
+------+-------+--------+------------
+(0 rows)
+
+-- ------------------------------------------------------------------
+-- validation of a non-enforced graph over messy data
+-- ------------------------------------------------------------------
+CREATE TABLE thing (id bigint PRIMARY KEY);
+INSERT INTO thing VALUES (1), (500);
+CREATE TABLE loose_edges (a bigint, b bigint, w float8, t0 timestamptz, t1 timestamptz);
+INSERT INTO loose_edges VALUES
+    (1, 2, 1, '2024-01-01', '2024-02-01'),    -- fine
+    (1, 101, 1, NULL, NULL),                  -- dst is a company: wrong label
+    (1, 999, 1, NULL, NULL),                  -- dangling dst
+    (777, 2, -3, NULL, NULL),                 -- dangling src, negative weight
+    (2, NULL, 1, NULL, NULL),                 -- NULL dst
+    (2, 3, 1, '2024-03-01', '2024-02-01');    -- invalid interval
+SELECT graph_create('messy');
+ graph_create 
+--------------
+ 
+(1 row)
+
+SELECT graph_add_vertex_label('messy', 'person', 'person');
+ graph_add_vertex_label 
+------------------------
+ 
+(1 row)
+
+SELECT graph_add_vertex_label('messy', 'company', 'company');
+ graph_add_vertex_label 
+------------------------
+ 
+(1 row)
+
+SELECT graph_add_vertex_label('messy', 'thing', 'thing');
+ graph_add_vertex_label 
+------------------------
+ 
+(1 row)
+
+SELECT graph_add_edge_label('messy', 'rel', 'loose_edges', 'a', 'person', 'b', 'person',
+                            weight_column => 'w', valid_from_column => 't0',
+                            valid_to_column => 't1', enforce => false);
+ graph_add_edge_label 
+----------------------
+ 
+(1 row)
+
+-- no constraints were installed
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'loose_edges'::regclass;
+ count 
+-------
+     0
+(1 row)
+
+SELECT graph_add_property_rule('messy', 'thing', 'id', true, 'id < 1000');
+ graph_add_property_rule 
+-------------------------
+ 
+(1 row)
+
+ALTER TABLE thing DROP CONSTRAINT graph_messy_thing_id_ck;
+INSERT INTO thing VALUES (1500);
+SELECT graph_add_property_rule('messy', 'company', 'name');
+ graph_add_property_rule 
+-------------------------
+ 
+(1 row)
+
+ALTER TABLE company ALTER COLUMN name DROP NOT NULL;
+INSERT INTO company VALUES (103, NULL);
+SELECT * FROM graph_validate('messy');
+       kind       |  label  |                             detail                              | violations 
+------------------+---------+-----------------------------------------------------------------+------------
+ key_collision    | person  | keys shared with vertex label thing                             |          1
+ dangling_src     | rel     | loose_edges.a not found in any vertex label                     |          1
+ null_dst         | rel     | loose_edges.b is NULL                                           |          1
+ dangling_dst     | rel     | loose_edges.b not found in any vertex label                     |          1
+ wrong_label_dst  | rel     | loose_edges.b found under another vertex label, expected person |          1
+ invalid_interval | rel     | t0 >= t1                                                        |          1
+ negative_weight  | rel     | w < 0 (shortest paths require non-negative weights)             |          1
+ missing_required | company | name is NULL                                                    |          1
+ check_failed     | thing   | id: id < 1000                                                   |          1
+(9 rows)
+
+-- ------------------------------------------------------------------
+-- graph_drop removes the constraints it installed, not the data
+-- ------------------------------------------------------------------
+SELECT graph_drop('social');
+ graph_drop 
+------------
+ 
+(1 row)
+
+SELECT conname FROM pg_constraint
+ WHERE conrelid IN ('knows'::regclass, 'works_at'::regclass, 'person'::regclass)
+   AND contype IN ('f', 'c');
+ conname 
+---------
+(0 rows)
+
+SELECT count(*) FROM knows;
+ count 
+-------
+     2
+(1 row)
+
+SELECT graph_drop('social');                                       -- error
+ERROR:  graph "social" does not exist
+CONTEXT:  PL/pgSQL function graph_drop(text,boolean) line 7 at RAISE
+SELECT graph_neighbors('social', 1);                               -- error
+ERROR:  graph "social" does not exist
+SELECT graph_drop('messy');
+NOTICE:  constraint "graph_messy_thing_id_ck" of relation "thing" does not exist, skipping
+ graph_drop 
+------------
+ 
+(1 row)
+
+SELECT count(*) FROM alohadb_graph_graphs;
+ count 
+-------
+     0
+(1 row)
+
+-- extension can be dropped cleanly
+DROP EXTENSION alohadb_graph;
+CREATE EXTENSION alohadb_graph;
+DROP TABLE person, company, knows, works_at, no_pk, thing, loose_edges;

@@ -199,6 +199,7 @@ with_libcurl	= @with_libcurl@
 with_libnuma	= @with_libnuma@
 with_liburing	= @with_liburing@
 with_libxml	= @with_libxml@
+with_zstd	= @with_zstd@
 with_libxslt	= @with_libxslt@
 with_llvm	= @with_llvm@
 with_system_tzdata = @with_system_tzdata@

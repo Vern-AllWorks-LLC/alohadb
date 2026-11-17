@@ -1,325 +1,362 @@
-/*-------------------------------------------------------------------------
- *
- * ivfflat.h
- *	  Header for IVFFlat (Inverted File with Flat quantization) index AM.
- *
- * The IVFFlat index partitions vectors into Voronoi cells using k-means
- * clustering.  At search time, only the posting lists of the nearest
- * centroids are scanned, trading recall for speed.
- *
- * Page layout:
- *	  Block 0           - metapage (IvfflatMetaPageData)
- *	  Blocks 1..N       - centroid pages (IvfflatListData entries)
- *	  Blocks N+1..end   - posting list pages (IvfflatEntryData entries)
- *
- * Copyright (c) 2025, AlohaDB Project
- *
+/*
  * src/backend/access/ivfflat/ivfflat.h
  *
- *-------------------------------------------------------------------------
+ * Ported from pgvector 0.8.7 (https://github.com/pgvector/pgvector),
+ * released under the PostgreSQL License:
+ *   Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *   Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ * Adapted for the AlohaDB core: built-in access method for the core `vector`
+ * type (halfvec/sparsevec/bit opclasses removed), GUCs defined in
+ * guc_tables.c, parallel build entry points registered in parallel.c, and a
+ * built-in LWLock tranche.  Version-conditional code resolved for the
+ * PostgreSQL 18 code base.
  */
 #ifndef IVFFLAT_H
 #define IVFFLAT_H
 
-#include "access/amapi.h"
-#include "access/generic_xlog.h"
+#include "postgres.h"
+
 #include "access/genam.h"
-#include "access/itup.h"
-#include "access/reloptions.h"
+#include "access/generic_xlog.h"
+#include "access/parallel.h"
 #include "lib/pairingheap.h"
 #include "nodes/execnodes.h"
-#include "storage/bufmgr.h"
-#include "storage/lock.h"
+#include "port.h"				/* for random() */
+#include "storage/condition_variable.h"
+#include "utils/sampling.h"
+#include "utils/tuplesort.h"
 #include "utils/vector.h"
 
-/* ----------
- * Constants
- * ----------
- */
+#include "varatt.h"
+
+#include "common/pg_prng.h"
+
+#include "storage/shmem.h"		/* for add_size()/mul_size() in some versions */
+
+#ifdef IVFFLAT_BENCH
+#include "portability/instr_time.h"
+#endif
+
+
+#define IVFFLAT_MAX_DIM 2000
+
+/* Support functions */
+#define IVFFLAT_DISTANCE_PROC 1
+#define IVFFLAT_NORM_PROC 2
+#define IVFFLAT_KMEANS_DISTANCE_PROC 3
+#define IVFFLAT_KMEANS_NORM_PROC 4
+#define IVFFLAT_TYPE_INFO_PROC 5
+
+#define IVFFLAT_VERSION	1
+#define IVFFLAT_MAGIC_NUMBER 0x14FF1A7
+#define IVFFLAT_PAGE_ID	0xFF84
+
+/* Preserved page numbers */
+#define IVFFLAT_METAPAGE_BLKNO	0
+#define IVFFLAT_HEAD_BLKNO		1	/* first list page */
+
+/* IVFFlat parameters */
 #define IVFFLAT_DEFAULT_LISTS	100
-#define IVFFLAT_MAX_LISTS		10000
 #define IVFFLAT_MIN_LISTS		1
+#define IVFFLAT_MAX_LISTS		32768
 #define IVFFLAT_DEFAULT_PROBES	1
-#define IVFFLAT_MAX_PROBES		IVFFLAT_MAX_LISTS
 
-/* Maximum vectors to sample for k-means training */
-#define IVFFLAT_KMEANS_SAMPLE_SIZE	10000
+/* Build phases */
+/* PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE is 1 */
+#define PROGRESS_IVFFLAT_PHASE_KMEANS	2
+#define PROGRESS_IVFFLAT_PHASE_ASSIGN	3
+#define PROGRESS_IVFFLAT_PHASE_LOAD		4
 
-/* Maximum k-means iterations */
-#define IVFFLAT_KMEANS_MAX_ITERATIONS	20
+#define IVFFLAT_LIST_SIZE(size)	add_size(offsetof(IvfflatListData, center), size)
 
-/* Strategy numbers -- must match pg_amop.dat and vector.h */
-#define IVFFLAT_L2_DISTANCE_STRATEGY	VECTOR_L2_DISTANCE_STRATEGY
-#define IVFFLAT_COSINE_DISTANCE_STRATEGY	VECTOR_COSINE_DISTANCE_STRATEGY
-#define IVFFLAT_IP_DISTANCE_STRATEGY	VECTOR_IP_DISTANCE_STRATEGY
+#define IvfflatPageGetOpaque(page)	((IvfflatPageOpaque) PageGetSpecialPointer(page))
+#define IvfflatPageGetMeta(page)	((IvfflatMetaPageData *) PageGetContents(page))
 
-/* Number of strategies and support functions */
-#define IVFFLAT_NUM_STRATEGIES		3
-#define IVFFLAT_NUM_SUPPORT			1
+#ifdef IVFFLAT_BENCH
+#define IvfflatBench(name, code) \
+	do { \
+		instr_time	start; \
+		instr_time	duration; \
+		INSTR_TIME_SET_CURRENT(start); \
+		(code); \
+		INSTR_TIME_SET_CURRENT(duration); \
+		INSTR_TIME_SUBTRACT(duration, start); \
+		elog(INFO, "%s: %.3f ms", name, INSTR_TIME_GET_MILLISEC(duration)); \
+	} while (0)
+#else
+#define IvfflatBench(name, code) (code)
+#endif
 
-/* Metapage is always block 0 */
-#define IVFFLAT_METAPAGE_BLKNO		0
+#define RandomDouble() pg_prng_double(&pg_global_prng_state)
+#define RandomInt() pg_prng_uint32(&pg_global_prng_state)
+#define SeedRandom(seed) pg_prng_seed(&pg_global_prng_state, seed)
 
-/* Metapage magic number */
-#define IVFFLAT_META_MAGIC			0x49564646	/* "IVFF" */
 
-/* Page types for special space */
-#define IVFFLAT_PAGE_META			0x01
-#define IVFFLAT_PAGE_CENTROID		0x02
-#define IVFFLAT_PAGE_POSTING		0x03
+#define palloc_array_checked(type, count) ((type *) palloc(mul_size(sizeof(type), count)))
+#define palloc0_array_checked(type, count) ((type *) palloc0(mul_size(sizeof(type), count)))
 
-/* ----------
- * Page special data -- stored at the end of every IVFFlat page
- * ----------
- */
-typedef struct IvfflatPageOpaqueData
+/* Variables (GUCs are defined in guc_tables.c) */
+#include "access/ivfflat_guc.h"
+
+typedef struct VectorArrayData
 {
-	BlockNumber nextblkno;		/* next page in chain, or InvalidBlockNumber */
-	uint16		page_type;		/* IVFFLAT_PAGE_* */
-	uint16		unused;			/* padding */
-} IvfflatPageOpaqueData;
+	int			length;
+	int			maxlen;
+	int			dim;
+	Size		itemsize;
+	char	   *items;
+}			VectorArrayData;
 
-typedef IvfflatPageOpaqueData *IvfflatPageOpaque;
+typedef VectorArrayData * VectorArray;
 
-#define IvfflatPageGetOpaque(page) \
-	((IvfflatPageOpaque) PageGetSpecialPointer(page))
-
-/* ----------
- * Metapage data -- stored on block 0
- * ----------
- */
-typedef struct IvfflatMetaPageData
+typedef struct ListInfo
 {
-	uint32		magic;			/* must be IVFFLAT_META_MAGIC */
-	uint32		num_lists;		/* number of centroid lists (k) */
-	uint32		dimensions;		/* vector dimensionality */
-	uint32		num_vectors;	/* total number of indexed vectors */
-	BlockNumber first_centroid_blkno;	/* first centroid page */
-} IvfflatMetaPageData;
+	BlockNumber blkno;
+	OffsetNumber offno;
+}			ListInfo;
 
-/* ----------
- * Centroid list descriptor -- one per Voronoi cell.
- * Stored contiguously on centroid pages.
- *
- * The centroid vector data follows immediately after this struct
- * (variable length, VECTOR_SIZE(dim) bytes).
- * ----------
- */
-typedef struct IvfflatListData
-{
-	BlockNumber first_posting_blkno;	/* head of posting list chain */
-	BlockNumber last_posting_blkno;		/* tail of posting list chain */
-	uint32		num_entries;			/* number of vectors in this list */
-
-	/* centroid vector data follows (variable length) */
-} IvfflatListData;
-
-/* Size of a centroid entry including the vector */
-#define IVFFLAT_LIST_SIZE(dim) \
-	(offsetof(IvfflatListData, num_entries) + sizeof(uint32) + VECTOR_SIZE(dim))
-
-/* Get the centroid vector from a list descriptor */
-#define IvfflatListGetCentroid(list) \
-	((Vector *) ((char *)(list) + offsetof(IvfflatListData, num_entries) + sizeof(uint32)))
-
-/* ----------
- * Posting list entry -- one per indexed vector.
- * Stored contiguously on posting list pages.
- *
- * The vector data follows immediately after the heap TID.
- * ----------
- */
-typedef struct IvfflatEntryData
-{
-	ItemPointerData heap_tid;	/* pointer to heap tuple */
-
-	/* vector data follows (variable length, VECTOR_SIZE(dim) bytes) */
-} IvfflatEntryData;
-
-/* Size of a posting entry including the vector */
-#define IVFFLAT_ENTRY_SIZE(dim) \
-	MAXALIGN(offsetof(IvfflatEntryData, heap_tid) + sizeof(ItemPointerData) + VECTOR_SIZE(dim))
-
-/* Get the vector from a posting entry */
-#define IvfflatEntryGetVector(entry) \
-	((Vector *) ((char *)(entry) + offsetof(IvfflatEntryData, heap_tid) + sizeof(ItemPointerData)))
-
-/* ----------
- * Reloptions for CREATE INDEX ... WITH (lists = N)
- * ----------
- */
+/* IVFFlat index options */
 typedef struct IvfflatOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
-	int			lists;			/* number of centroid lists */
-} IvfflatOptions;
+	int			lists;			/* number of lists */
+}			IvfflatOptions;
 
-#define IvfflatGetLists(relation) \
-	((relation)->rd_options ? \
-	 ((IvfflatOptions *) (relation)->rd_options)->lists : \
-	 IVFFLAT_DEFAULT_LISTS)
-
-/* ----------
- * Scan opaque data
- * ----------
- */
-
-/* Result entry in the pairing heap */
-typedef struct IvfflatScanEntry
+typedef struct IvfflatSpool
 {
-	pairingheap_node ph_node;	/* pairing heap node -- must be first */
-	ItemPointerData heap_tid;	/* heap tuple identifier */
-	double		distance;		/* distance from query to this vector */
-} IvfflatScanEntry;
+	Tuplesortstate *sortstate;
+	Relation	heap;
+	Relation	index;
+}			IvfflatSpool;
 
-typedef struct IvfflatScanOpaqueData
+typedef struct IvfflatShared
 {
-	/* Query vector (copied from scan keys) */
-	Vector	   *query;
-	int			dimensions;
+	/* Immutable state */
+	Oid			heaprelid;
+	Oid			indexrelid;
+	bool		isconcurrent;
+	int			scantuplesortstates;
 
-	/* Strategy (distance metric) */
-	StrategyNumber strategy;
+	/* Worker progress */
+	ConditionVariable workersdonecv;
 
-	/* Probes setting */
-	int			nprobes;
+	/* Mutex for mutable state */
+	slock_t		mutex;
 
-	/* Distance function (selected based on strategy) */
-	double		(*distfunc)(const Vector *a, const Vector *b);
+	/* Mutable state */
+	int			nparticipantsdone;
+	double		reltuples;
+	double		indtuples;
 
-	/* Results heap (min-heap sorted by distance) */
-	pairingheap *results;
+#ifdef IVFFLAT_KMEANS_DEBUG
+	double		inertia;
+#endif
+}			IvfflatShared;
 
-	/* Whether we have scanned the posting lists yet */
-	bool		scan_done;
+#define ParallelTableScanFromIvfflatShared(shared) \
+	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(IvfflatShared)))
 
-	/* Number of results in the heap */
-	int			num_results;
+typedef struct IvfflatLeader
+{
+	ParallelContext *pcxt;
+	int			nparticipanttuplesorts;
+	IvfflatShared *ivfshared;
+	Sharedsort *sharedsort;
+	Snapshot	snapshot;
+	char	   *ivfcenters;
+}			IvfflatLeader;
 
-	/* Memory context for scan-lifetime allocations */
-	MemoryContext scan_ctx;
-} IvfflatScanOpaqueData;
+typedef struct IvfflatTypeInfo
+{
+	int			maxDimensions;
+	Datum		(*dimensions) (PG_FUNCTION_ARGS);
+	Datum		(*normalize) (PG_FUNCTION_ARGS);
+	Size		(*itemSize) (int dimensions);
+	void		(*updateCenter) (Pointer v, int dimensions, float *x);
+	void		(*sumCenter) (Pointer v, int dimensions, float *x);
+}			IvfflatTypeInfo;
 
-typedef IvfflatScanOpaqueData *IvfflatScanOpaque;
-
-/* ----------
- * Build state
- * ----------
- */
 typedef struct IvfflatBuildState
 {
+	/* Info */
 	Relation	heap;
 	Relation	index;
 	IndexInfo  *indexInfo;
+	const		IvfflatTypeInfo *typeInfo;
+	TupleDesc	tupdesc;
 
+	/* Settings */
 	int			dimensions;
-	int			num_lists;
+	int			lists;
 
-	/* k-means training data */
-	Vector	  **samples;
-	int			num_samples;
-	int			max_samples;
+	/* Statistics */
+	double		indtuples;
+	double		reltuples;
 
-	/* Centroids computed by k-means */
-	Vector	  **centroids;
+	/* Support functions */
+	FmgrInfo   *procinfo;
+	FmgrInfo   *normprocinfo;
+	FmgrInfo   *kmeansnormprocinfo;
+	Oid			collation;
 
-	/* Per-list posting list tracking */
-	BlockNumber *list_first_blkno;
-	BlockNumber *list_last_blkno;
-	uint32	   *list_counts;
+	/* Variables */
+	VectorArray samples;
+	VectorArray centers;
+	ListInfo   *listInfo;
+	Size		itemsize;
 
-	/* Page being filled for posting list writes */
-	Buffer		current_buffer;
-	Page		current_page;
-	int			current_list;
+#ifdef IVFFLAT_KMEANS_DEBUG
+	double		inertia;
+	double	   *listSums;
+	int		   *listCounts;
+#endif
 
-	/* Counts */
-	double		heap_tuples;
-	double		index_tuples;
+	/* Sampling */
+	BlockSamplerData bs;
+	ReservoirStateData rstate;
+	double		samplerows;
+	double		rowstoskip;
 
-	/* Distance function for assignment */
-	double		(*distfunc)(const Vector *a, const Vector *b);
-} IvfflatBuildState;
+	/* Sorting */
+	Tuplesortstate *sortstate;
+	TupleDesc	sortdesc;
+	TupleTableSlot *slot;
 
-/* ----------
- * GUC variable (declared in src/include/access/ivfflat_guc.h)
- * ----------
- */
-#include "access/ivfflat_guc.h"
+	/* Memory */
+	Size		memoryUsed;
+	MemoryContext tmpCtx;
 
-/* ----------
- * Function prototypes -- ivfflatutils.c
- * ----------
- */
-extern void ivfflat_page_init(Page page, uint16 page_type);
-extern double ivfflat_get_distance(StrategyNumber strategy,
-								   const Vector *a, const Vector *b);
-typedef double (*IvfflatDistFunc)(const Vector *a, const Vector *b);
-extern IvfflatDistFunc ivfflat_get_distfunc(StrategyNumber strategy);
+	/* Parallel builds */
+	IvfflatLeader *ivfleader;
+}			IvfflatBuildState;
 
-/* ----------
- * Function prototypes -- ivfflatbuild.c
- * ----------
- */
-extern IndexBuildResult *ivfflatbuild(Relation heap, Relation index,
-									  struct IndexInfo *indexInfo);
-extern void ivfflatbuildempty(Relation index);
+typedef struct IvfflatMetaPageData
+{
+	uint32		magicNumber;
+	uint32		version;
+	uint16		dimensions;
+	uint16		lists;
+}			IvfflatMetaPageData;
 
-/* ----------
- * Function prototypes -- ivfflatinsert.c
- * ----------
- */
-extern bool ivfflatinsert(Relation index, Datum *values, bool *isnull,
-						  ItemPointer ht_ctid, Relation heapRel,
-						  IndexUniqueCheck checkUnique,
-						  bool indexUnchanged,
-						  struct IndexInfo *indexInfo);
+typedef IvfflatMetaPageData * IvfflatMetaPage;
 
-/* ----------
- * Function prototypes -- ivfflatscan.c
- * ----------
- */
-extern IndexScanDesc ivfflatbeginscan(Relation index, int nkeys,
-									  int norderbys);
-extern void ivfflatrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
-						  ScanKey orderbys, int norderbys);
-extern bool ivfflatgettuple(IndexScanDesc scan, ScanDirection dir);
-extern void ivfflatendscan(IndexScanDesc scan);
+typedef struct IvfflatPageOpaqueData
+{
+	BlockNumber nextblkno;
+	uint16		unused;
+	uint16		page_id;		/* for identification of IVFFlat indexes */
+}			IvfflatPageOpaqueData;
 
-/* ----------
- * Function prototypes -- ivfflatvacuum.c
- * ----------
- */
-extern IndexBulkDeleteResult *ivfflatbulkdelete(IndexVacuumInfo *info,
-												IndexBulkDeleteResult *stats,
-												IndexBulkDeleteCallback callback,
-												void *callback_state);
-extern IndexBulkDeleteResult *ivfflatvacuumcleanup(IndexVacuumInfo *info,
-												   IndexBulkDeleteResult *stats);
+typedef IvfflatPageOpaqueData * IvfflatPageOpaque;
 
-/* ----------
- * Function prototypes -- ivfflatcost.c
- * ----------
- */
-extern void ivfflatcostestimate(struct PlannerInfo *root,
-								struct IndexPath *path,
-								double loop_count,
-								Cost *indexStartupCost,
-								Cost *indexTotalCost,
-								Selectivity *indexSelectivity,
-								double *indexCorrelation,
-								double *indexPages);
+typedef struct IvfflatListData
+{
+	BlockNumber startPage;
+	BlockNumber insertPage;
+	Vector		center;
+}			IvfflatListData;
 
-/* ----------
- * Function prototypes -- ivfflatvalidate.c
- * ----------
- */
-extern bool ivfflatvalidate(Oid opclassoid);
+typedef IvfflatListData * IvfflatList;
 
-/* ----------
- * Function prototypes -- ivfflatoptions.c
- * ----------
- */
-extern bytea *ivfflatoptions(Datum reloptions, bool validate);
+typedef struct IvfflatScanList
+{
+	pairingheap_node ph_node;
+	BlockNumber startPage;
+	double		distance;
+}			IvfflatScanList;
 
-#endif							/* IVFFLAT_H */
+typedef struct IvfflatScanOpaqueData
+{
+	const		IvfflatTypeInfo *typeInfo;
+	int			probes;
+	int			maxProbes;
+	int			dimensions;
+	bool		first;
+	Datum		value;
+	MemoryContext tmpCtx;
+
+	/* Sorting */
+	Tuplesortstate *sortstate;
+	TupleDesc	tupdesc;
+	TupleTableSlot *vslot;
+	TupleTableSlot *mslot;
+	BufferAccessStrategy bas;
+
+	/* Support functions */
+	FmgrInfo   *procinfo;
+	FmgrInfo   *normprocinfo;
+	Oid			collation;
+	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
+
+	/* Lists */
+	pairingheap *listQueue;
+	BlockNumber *listPages;
+	int			listIndex;
+	IvfflatScanList *lists;
+}			IvfflatScanOpaqueData;
+
+typedef IvfflatScanOpaqueData * IvfflatScanOpaque;
+
+#define VECTOR_ARRAY_SIZE(_length, _size) add_size(sizeof(VectorArrayData), mul_size(_length, MAXALIGN(_size)))
+
+/* Use functions instead of macros to avoid double evaluation */
+
+static inline Pointer
+VectorArrayGet(VectorArray arr, int offset)
+{
+	/* Safety check */
+	if (offset < 0 || offset >= arr->maxlen)
+		elog(ERROR, "index out of bounds");
+
+	return ((char *) arr->items) + (offset * arr->itemsize);
+}
+
+static inline void
+VectorArraySet(VectorArray arr, int offset, Pointer val)
+{
+	Size		size = VARSIZE_ANY(val);
+
+	/* Safety check */
+	if (size > arr->itemsize)
+		elog(ERROR, "item too large");
+
+	memcpy(VectorArrayGet(arr, offset), val, size);
+}
+
+/* Methods */
+VectorArray VectorArrayInit(int maxlen, int dimensions, Size itemsize);
+void		VectorArrayFree(VectorArray arr);
+void		IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers, const IvfflatTypeInfo * typeInfo, Size memoryUsed);
+FmgrInfo   *IvfflatOptionalProcInfo(Relation index, uint16 procnum);
+Datum		IvfflatNormValue(const IvfflatTypeInfo * typeInfo, Oid collation, Datum value);
+bool		IvfflatCheckNorm(FmgrInfo *procinfo, Oid collation, Datum value);
+void		IvfflatNormVectors(const IvfflatTypeInfo * typeInfo, Oid collation, VectorArray arr, MemoryContext tmpCtx);
+void		IvfflatCheckMemoryUsage(Size totalSize);
+int			IvfflatGetLists(Relation index);
+void		IvfflatGetMetaPageInfo(Relation index, int *lists, int *dimensions);
+void		IvfflatUpdateList(Relation index, ListInfo listInfo, BlockNumber insertPage, BlockNumber originalInsertPage, BlockNumber startPage, ForkNumber forkNum);
+void		IvfflatCommitBuffer(Buffer buf, GenericXLogState *state);
+void		IvfflatAppendPage(Relation index, Buffer *buf, Page *page, GenericXLogState **state, ForkNumber forkNum);
+Buffer		IvfflatNewBuffer(Relation index, ForkNumber forkNum);
+void		IvfflatInitPage(Buffer buf, Page page);
+void		IvfflatInitRegisterPage(Relation index, Buffer *buf, Page *page, GenericXLogState **state);
+void		IvfflatInit(void);
+void		IvfflatCheckDim(int expected, const IvfflatTypeInfo * typeInfo, Oid collation, Datum value);
+const		IvfflatTypeInfo *IvfflatGetTypeInfo(Relation index);
+
+/* Index access methods */
+IndexBuildResult *ivfflatbuild(Relation heap, Relation index, IndexInfo *indexInfo);
+void		ivfflatbuildempty(Relation index);
+bool		ivfflatinsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique
+						  ,bool indexUnchanged
+						  ,IndexInfo *indexInfo
+);
+IndexBulkDeleteResult *ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state);
+IndexBulkDeleteResult *ivfflatvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
+IndexScanDesc ivfflatbeginscan(Relation index, int nkeys, int norderbys);
+void		ivfflatrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
+bool		ivfflatgettuple(IndexScanDesc scan, ScanDirection dir);
+void		ivfflatendscan(IndexScanDesc scan);
+
+#endif

@@ -899,3 +899,56 @@ vector_scale(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VECTOR_P(result);
 }
+
+/*
+ * Index support functions used by the hnsw and ivfflat access methods
+ * (same semantics as pgvector's functions of the same SQL names).
+ */
+
+/* vector_l2_squared_distance(vector, vector): squared Euclidean distance */
+Datum
+vector_l2_squared_distance_op(PG_FUNCTION_ARGS)
+{
+	Vector	   *a = PG_GETARG_VECTOR_P(0);
+	Vector	   *b = PG_GETARG_VECTOR_P(1);
+
+	vector_check_dims(a, b);
+
+	PG_RETURN_FLOAT8(vector_l2_squared_distance(a, b));
+}
+
+/* vector_negative_inner_product(vector, vector): -(a . b) */
+Datum
+vector_negative_inner_product_op(PG_FUNCTION_ARGS)
+{
+	Vector	   *a = PG_GETARG_VECTOR_P(0);
+	Vector	   *b = PG_GETARG_VECTOR_P(1);
+
+	vector_check_dims(a, b);
+
+	PG_RETURN_FLOAT8(-vector_dot_product(a, b));
+}
+
+/*
+ * vector_spherical_distance(vector, vector): angle between unit vectors
+ * divided by pi (used by ivfflat k-means for cosine / inner product).
+ */
+Datum
+vector_spherical_distance_op(PG_FUNCTION_ARGS)
+{
+	Vector	   *a = PG_GETARG_VECTOR_P(0);
+	Vector	   *b = PG_GETARG_VECTOR_P(1);
+	double		distance;
+
+	vector_check_dims(a, b);
+
+	distance = vector_dot_product(a, b);
+
+	/* Prevent NaN with acos with loss of precision */
+	if (distance > 1)
+		distance = 1;
+	else if (distance < -1)
+		distance = -1;
+
+	PG_RETURN_FLOAT8(acos(distance) / M_PI);
+}
