@@ -8,7 +8,7 @@
 
 project('alohadb',
   ['c'],
-  version: '20.2',
+  version: '20.3',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for

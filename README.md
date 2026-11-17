@@ -8,7 +8,7 @@ AlohaDB is an AI-native database built on PostgreSQL 18 (currently based on 18.7
 
 IVFFlat approximate nearest-neighbor indexes (k-means trained) and named distance functions on top of the built-in `vector` type, which ships in the AlohaDB core together with the `<->` (L2), `<=>` (cosine), `<#>` (negative inner product) and `<+>` (L1) operators.
 
-The core also has built-in `hnsw` and `ivfflat` index access methods, ported from pgvector 0.8.7 (PostgreSQL License), so `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)` and `ORDER BY embedding <=> $1 LIMIT k` work as they do with pgvector: opclasses `vector_l2_ops`, `vector_ip_ops`, `vector_cosine_ops`, `vector_l1_ops` (hnsw), parallel builds, filtered search with iterative scans, and the `hnsw.ef_search`, `hnsw.iterative_scan`, `hnsw.max_scan_tuples`, `hnsw.scan_mem_multiplier`, `ivfflat.probes`, `ivfflat.iterative_scan` and `ivfflat.max_probes` settings. No extension is needed for these.
+The core also has built-in `hnsw` and `ivfflat` index access methods, ported from pgvector 0.8.7 (PostgreSQL License), so `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)` and `ORDER BY embedding <=> $1 LIMIT k` work as they do with pgvector: opclasses `vector_l2_ops`, `vector_ip_ops`, `vector_cosine_ops`, `vector_l1_ops` (hnsw), parallel builds, filtered search with iterative scans, and the `hnsw.ef_search`, `hnsw.iterative_scan`, `hnsw.max_scan_tuples`, `hnsw.scan_mem_multiplier`, `ivfflat.probes`, `ivfflat.iterative_scan` and `ivfflat.max_probes` settings. No extension is needed for these. As in pgvector, `integer[]`, `real[]`, `double precision[]` and `numeric[]` values cast to `vector` (assignment casts, so arrays can be inserted into `vector(n)` columns directly; the dimension count is checked).
 
 ```sql
 CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
@@ -832,6 +832,12 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 **Use case:** Produce installable AlohaDB packages for all three platforms from one push, with optional notarization/signing steps.
 
 ## Release notes
+
+### 20.3.0 — November 2026
+
+- Casts from `integer[]`, `real[]`, `double precision[]` and `numeric[]` to `vector`, as in pgvector (assignment casts via `array_to_vector(array, typmod, explicit)`): `INSERT INTO items (embedding) VALUES (ARRAY[1,2,3])` and `SELECT ARRAY[1,2,3]::vector(3)` now work, with the same 1-D / no-NULL / dimension / finite-value checks as vector input.
+- pgvector's `hnsw_vector` and `ivfflat_vector` regression suites now run unmodified as the core `vector_index` test.
+- **Upgrade note:** the catalog version changed; existing 20.2 clusters need `al_upgrade` (or dump/restore). On-disk index formats are unchanged.
 
 ### 20.2.0 — November 2026
 

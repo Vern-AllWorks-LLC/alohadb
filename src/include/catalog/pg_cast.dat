@@ -560,4 +560,18 @@
 { castsource => 'tstzrange', casttarget => 'tstzmultirange',
   castfunc => 'tstzmultirange(tstzrange)', castcontext => 'e',
   castmethod => 'f' },
+
+# numeric arrays to vector (assignment casts, as in pgvector)
+{ castsource => '_int4', casttarget => 'vector',
+  castfunc => 'array_to_vector(_int4,int4,bool)', castcontext => 'a',
+  castmethod => 'f' },
+{ castsource => '_float4', casttarget => 'vector',
+  castfunc => 'array_to_vector(_float4,int4,bool)', castcontext => 'a',
+  castmethod => 'f' },
+{ castsource => '_float8', casttarget => 'vector',
+  castfunc => 'array_to_vector(_float8,int4,bool)', castcontext => 'a',
+  castmethod => 'f' },
+{ castsource => '_numeric', casttarget => 'vector',
+  castfunc => 'array_to_vector(_numeric,int4,bool)', castcontext => 'a',
+  castmethod => 'f' },
 ]
