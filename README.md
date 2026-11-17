@@ -8,6 +8,15 @@ AlohaDB is an AI-native database built on PostgreSQL 18 (currently based on 18.7
 
 IVFFlat approximate nearest-neighbor indexes (k-means trained) and named distance functions on top of the built-in `vector` type, which ships in the AlohaDB core together with the `<->` (L2), `<=>` (cosine), `<#>` (negative inner product) and `<+>` (L1) operators.
 
+The core also has built-in `hnsw` and `ivfflat` index access methods, ported from pgvector 0.8.7 (PostgreSQL License), so `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)` and `ORDER BY embedding <=> $1 LIMIT k` work as they do with pgvector: opclasses `vector_l2_ops`, `vector_ip_ops`, `vector_cosine_ops`, `vector_l1_ops` (hnsw), parallel builds, filtered search with iterative scans, and the `hnsw.ef_search`, `hnsw.iterative_scan`, `hnsw.max_scan_tuples`, `hnsw.scan_mem_multiplier`, `ivfflat.probes`, `ivfflat.iterative_scan` and `ivfflat.max_probes` settings. No extension is needed for these.
+
+```sql
+CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+SET hnsw.ef_search = 100;
+SET hnsw.iterative_scan = relaxed_order;          -- keep filtered queries full
+SELECT id FROM docs WHERE lang = 'en' ORDER BY embedding <=> $1 LIMIT 10;
+```
+
 ```sql
 CREATE EXTENSION alohadb_vector;
 SELECT vector_index_create('emb_idx', 'docs', 'embedding', 'id', 100, 10, 'cosine');
@@ -829,7 +838,8 @@ A matrix of `ubuntu-latest`, `macos-14`, `macos-13` and `windows-latest` runners
 - New extensions: `alohadb_graph` (enforced property-graph schemas, traversal, temporal paths, PageRank, point-in-time GNN sampling), `alohadb_bitemporal`, `alohadb_lineage` (dataset snapshots, model→data lineage, zero-copy table branches), `alohadb_embeddings` (embedding lifecycle, hybrid vector + full-text search), `alohadb_ndarray` (chunked compressed N-d arrays), `alohadb_measure` (units, uncertainty, provenance), `alohadb_tsfunc` (LTTB, resampling, as-of joins, Gorilla codecs).
 - `alohadb_parquet` 1.2: `write_parquet`, `write_arrow`, `arrow_ipc_stream`; `read_parquet` rewritten (it returned no rows for files written by PyArrow).
 - `alohadb_temporal` 1.1: history tables no longer copy the base table's primary key, which made the second update of any row fail. `ALTER EXTENSION alohadb_temporal UPDATE` repairs existing history tables.
-- Core `hnsw` / `ivfflat` index AMs: fixed a crash and silently empty results; index builds are no longer quadratic and can be cancelled. The AMs remain disabled for query planning (exact search is used) until the approximate search itself is reimplemented.
+- Core `hnsw` / `ivfflat` index access methods replaced with a port of pgvector 0.8.7 (PostgreSQL License) for the core `vector` type. The previous implementation never served ORDER BY queries (and returned wrong or no results when forced); the new one gives pgvector's behaviour — e.g. recall@10 ≈ 0.97 in ~1 ms on 50k 32-dimension vectors — plus parallel builds, iterative (filtered) scans and an `hnsw` `vector_l1_ops` opclass. New functions `vector_l2_squared_distance`, `vector_negative_inner_product`, `vector_spherical_distance`; new settings `hnsw.*` / `ivfflat.iterative_scan` / `ivfflat.max_probes`.
+- **Upgrade note:** the catalog version changed, so existing clusters need `al_upgrade` (or dump/restore), and any existing `hnsw` / `ivfflat` indexes must be rebuilt with `REINDEX` (the on-disk format changed; old indexes report "not valid").
 - Patent-aware design: time-series compression is offered only as value-level codecs, and there is no chunk tiering to object storage or invalidation-based continuous aggregation; bitemporal storage uses one current + one history table; branches are logical overlays. Prior art is cited in each extension's source.
 
 ### 20.1.1 — November 2026

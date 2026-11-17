@@ -3227,36 +3227,35 @@
   amoprighttype => 'point', amopstrategy => '7', amopopr => '@>(box,point)',
   amopmethod => 'brin' },
 
-# HNSW vector_l2_ops
+# hnsw / ivfflat ordering operators (pgvector layout: strategy 1 per family)
 { amopfamily => 'hnsw/vector_l2_ops', amoplefttype => 'vector',
   amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<->(vector,vector)', amopmethod => 'hnsw',
-  amoppurpose => 'o' },
-# HNSW vector_cosine_ops
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 { amopfamily => 'hnsw/vector_cosine_ops', amoplefttype => 'vector',
-  amoprighttype => 'vector', amopstrategy => '2',
+  amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<=>(vector,vector)', amopmethod => 'hnsw',
-  amoppurpose => 'o' },
-# HNSW vector_ip_ops
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 { amopfamily => 'hnsw/vector_ip_ops', amoplefttype => 'vector',
-  amoprighttype => 'vector', amopstrategy => '3',
+  amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<#>(vector,vector)', amopmethod => 'hnsw',
-  amoppurpose => 'o' },
-# IVFFlat vector_l2_ops
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
+{ amopfamily => 'hnsw/vector_l1_ops', amoplefttype => 'vector',
+  amoprighttype => 'vector', amopstrategy => '1',
+  amopopr => '<+>(vector,vector)', amopmethod => 'hnsw',
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 { amopfamily => 'ivfflat/vector_l2_ops', amoplefttype => 'vector',
   amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<->(vector,vector)', amopmethod => 'ivfflat',
-  amoppurpose => 'o' },
-# IVFFlat vector_cosine_ops
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 { amopfamily => 'ivfflat/vector_cosine_ops', amoplefttype => 'vector',
-  amoprighttype => 'vector', amopstrategy => '2',
+  amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<=>(vector,vector)', amopmethod => 'ivfflat',
-  amoppurpose => 'o' },
-# IVFFlat vector_ip_ops
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 { amopfamily => 'ivfflat/vector_ip_ops', amoplefttype => 'vector',
-  amoprighttype => 'vector', amopstrategy => '3',
+  amoprighttype => 'vector', amopstrategy => '1',
   amopopr => '<#>(vector,vector)', amopmethod => 'ivfflat',
-  amoppurpose => 'o' },
+  amoppurpose => 'o', amopsortfamily => 'btree/float_ops' },
 
 # btree vector_ops
 { amopfamily => 'btree/vector_ops', amoplefttype => 'vector',

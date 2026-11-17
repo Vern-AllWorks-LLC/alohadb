@@ -1,12 +1,12 @@
-# Copyright (c) 2025, AlohaDB Project
+# Copyright (c) 2025-2026, AlohaDB Project
+# Sources ported from pgvector 0.8.7 (PostgreSQL License)
 
 backend_sources += files(
-  'ivfflatbuild.c',
-  'ivfflatcost.c',
-  'ivfflatinsert.c',
-  'ivfflatoptions.c',
-  'ivfflatscan.c',
-  'ivfflatutils.c',
-  'ivfflatvacuum.c',
-  'ivfflatvalidate.c',
+  'ivfbuild.c',
+  'ivfflat.c',
+  'ivfinsert.c',
+  'ivfkmeans.c',
+  'ivfscan.c',
+  'ivfutils.c',
+  'ivfvacuum.c',
 )

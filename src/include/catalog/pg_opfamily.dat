@@ -312,6 +312,8 @@
   opfmethod => 'hnsw', opfname => 'vector_cosine_ops' },
 { oid => '8897',
   opfmethod => 'hnsw', opfname => 'vector_ip_ops' },
+{ oid => '8902',
+  opfmethod => 'hnsw', opfname => 'vector_l1_ops' },
 # IVFFlat vector operator families
 { oid => '8898',
   opfmethod => 'ivfflat', opfname => 'vector_l2_ops' },

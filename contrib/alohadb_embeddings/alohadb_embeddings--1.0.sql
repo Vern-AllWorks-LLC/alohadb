@@ -988,12 +988,13 @@ BEGIN
 END;
 $$;
 
--- Model predicate for queries on a store table.  The core hnsw / ivfflat
--- opfamilies must declare a float8 sort family (pg_amop.amopsortfamily) for the
--- planner to use them for ORDER BY distance.  If they do not, an ANN index can
--- only be picked as an unordered scan of the partial index, which returns no
--- rows; in that case the predicate is written so that it does not imply the
--- partial-index predicate (model_id = N) and an exact scan is used instead.
+-- Model predicate for queries on a store table.  Current AlohaDB builds ship
+-- the pgvector-based hnsw / ivfflat access methods, whose ordering operators
+-- declare a float8 sort family, so `model_id = N` lets the planner use the
+-- per-model partial ANN index.  Older AlohaDB builds lacked the sort family
+-- (pg_amop.amopsortfamily = 0) and their ANN indexes could not serve ORDER BY
+-- distance; there the predicate is written so that it does not imply the
+-- partial-index predicate and an exact scan is used instead.
 CREATE FUNCTION embedding__model_pred(p_alias text)
 RETURNS text
 LANGUAGE sql STABLE

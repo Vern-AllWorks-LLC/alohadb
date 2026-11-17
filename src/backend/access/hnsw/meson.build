@@ -1,12 +1,11 @@
-# Copyright (c) 2025, AlohaDB Project
+# Copyright (c) 2025-2026, AlohaDB Project
+# Sources ported from pgvector 0.8.7 (PostgreSQL License)
 
 backend_sources += files(
+  'hnsw.c',
   'hnswbuild.c',
-  'hnswcost.c',
   'hnswinsert.c',
-  'hnswoptions.c',
-  'hnsw_scan.c',
+  'hnswscan.c',
   'hnswutils.c',
   'hnswvacuum.c',
-  'hnswvalidate.c',
 )

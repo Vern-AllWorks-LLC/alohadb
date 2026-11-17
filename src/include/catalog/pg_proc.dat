@@ -12589,6 +12589,15 @@
 { oid => '8823', descr => 'L1 (Manhattan) distance between vectors',
   proname => 'vector_l1_distance_op', prorettype => 'float8',
   proargtypes => 'vector vector', prosrc => 'vector_l1_distance_op' },
+{ oid => '8824', descr => 'squared L2 distance between vectors (index support)',
+  proname => 'vector_l2_squared_distance', prorettype => 'float8',
+  proargtypes => 'vector vector', prosrc => 'vector_l2_squared_distance_op' },
+{ oid => '8825', descr => 'negative inner product between vectors (index support)',
+  proname => 'vector_negative_inner_product', prorettype => 'float8',
+  proargtypes => 'vector vector', prosrc => 'vector_negative_inner_product_op' },
+{ oid => '8826', descr => 'spherical distance between vectors (index support)',
+  proname => 'vector_spherical_distance', prorettype => 'float8',
+  proargtypes => 'vector vector', prosrc => 'vector_spherical_distance_op' },
 
 # Vector utility functions
 { oid => '8830', descr => 'number of dimensions in a vector',

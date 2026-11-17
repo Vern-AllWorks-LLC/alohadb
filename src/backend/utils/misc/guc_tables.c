@@ -31,6 +31,7 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/hnsw_guc.h"
 #include "access/ivfflat_guc.h"
 #include "access/htup_details.h"
 #include "access/slru.h"
@@ -523,6 +524,19 @@ static const struct config_enum_entry file_extend_method_options[] = {
 	{"posix_fallocate", FILE_EXTEND_METHOD_POSIX_FALLOCATE, false},
 #endif
 	{"write_zeros", FILE_EXTEND_METHOD_WRITE_ZEROS, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry hnsw_iterative_scan_options[] = {
+	{"off", HNSW_ITERATIVE_SCAN_OFF, false},
+	{"relaxed_order", HNSW_ITERATIVE_SCAN_RELAXED, false},
+	{"strict_order", HNSW_ITERATIVE_SCAN_STRICT, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry ivfflat_iterative_scan_options[] = {
+	{"off", IVFFLAT_ITERATIVE_SCAN_OFF, false},
+	{"relaxed_order", IVFFLAT_ITERATIVE_SCAN_RELAXED, false},
 	{NULL, 0, false}
 };
 
@@ -3799,12 +3813,46 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"ivfflat.probes", PGC_USERSET, CLIENT_CONN_OTHER,
+		{"ivfflat.probes", PGC_USERSET, QUERY_TUNING_OTHER,
 			gettext_noop("Sets the number of probes for IVFFlat index scans."),
-			NULL,
+			gettext_noop("Valid range is 1..lists."),
+			GUC_EXPLAIN
 		},
 		&ivfflat_probes,
-		1, 1, 10000,
+		1, 1, 32768,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ivfflat.max_probes", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the max number of probes for IVFFlat iterative scans."),
+			gettext_noop("If this is less than ivfflat.probes, ivfflat.probes is used."),
+			GUC_EXPLAIN
+		},
+		&ivfflat_max_probes,
+		32768, 1, 32768,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"hnsw.ef_search", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the size of the dynamic candidate list for HNSW index scans."),
+			gettext_noop("Valid range is 1..1000."),
+			GUC_EXPLAIN
+		},
+		&hnsw_ef_search,
+		40, 1, 1000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"hnsw.max_scan_tuples", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the max number of tuples to visit for HNSW iterative scans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&hnsw_max_scan_tuples,
+		20000, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4279,6 +4327,17 @@ struct config_real ConfigureNamesReal[] =
 		},
 		&vacuum_max_eager_freeze_failure_rate,
 		0.03, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"hnsw.scan_mem_multiplier", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the multiple of work_mem to use for HNSW iterative scans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&hnsw_scan_mem_multiplier,
+		1, 1, 1000,
 		NULL, NULL, NULL
 	},
 
@@ -5629,6 +5688,28 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&replication_mode,
 		REPLICATION_MODE_STREAMING, replication_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"hnsw.iterative_scan", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the mode for HNSW iterative index scans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&hnsw_iterative_scan,
+		HNSW_ITERATIVE_SCAN_OFF, hnsw_iterative_scan_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ivfflat.iterative_scan", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the mode for IVFFlat iterative index scans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&ivfflat_iterative_scan,
+		IVFFLAT_ITERATIVE_SCAN_OFF, ivfflat_iterative_scan_options,
 		NULL, NULL, NULL
 	},
 

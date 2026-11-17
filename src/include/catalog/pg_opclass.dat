@@ -495,6 +495,8 @@
   opcfamily => 'hnsw/vector_cosine_ops', opcintype => 'vector', opcdefault => 'f' },
 { opcmethod => 'hnsw', opcname => 'vector_ip_ops',
   opcfamily => 'hnsw/vector_ip_ops', opcintype => 'vector', opcdefault => 'f' },
+{ opcmethod => 'hnsw', opcname => 'vector_l1_ops',
+  opcfamily => 'hnsw/vector_l1_ops', opcintype => 'vector', opcdefault => 'f' },
 # IVFFlat vector operator classes
 { opcmethod => 'ivfflat', opcname => 'vector_l2_ops',
   opcfamily => 'ivfflat/vector_l2_ops', opcintype => 'vector' },
