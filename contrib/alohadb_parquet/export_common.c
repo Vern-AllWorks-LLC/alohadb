@@ -483,6 +483,12 @@ export_check_output_path(const char *path)
 				(errcode(ERRCODE_NAME_TOO_LONG),
 				 errmsg("output path is too long")));
 
+	/* A trailing separator names a directory (canonicalize_path drops it) */
+	if (path[strlen(path) - 1] == '/' || path[strlen(path) - 1] == '\\')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_NAME),
+				 errmsg("output path \"%s\" does not name a file", path)));
+
 	copy = pstrdup(path);
 	canonicalize_path(copy);	/* also turns '\\' into '/' on Windows */
 	sep = strrchr(copy, '/');
