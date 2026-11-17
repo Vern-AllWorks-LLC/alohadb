@@ -1,7 +1,7 @@
 --
 -- hnsw / ivfflat index access methods on the core vector type.
 -- From pgvector 0.8.7 test/sql/hnsw_vector.sql and ivfflat_vector.sql
--- (PostgreSQL License); array_fill() casts adapted to array_to_vector().
+-- (PostgreSQL License), unmodified.
 --
 SET enable_seqscan = off;
 -- L2
@@ -427,7 +427,7 @@ DROP TABLE t;
 RESET maintenance_work_mem;
 SET maintenance_work_mem = '5MB';
 CREATE TABLE t (val vector(2000));
-INSERT INTO t (val) VALUES (array_to_vector(array_fill(0::float4, ARRAY[2000])));
+INSERT INTO t (val) VALUES (array_fill(0, ARRAY[2000]));
 CREATE INDEX ON t USING ivfflat (val vector_l2_ops);
 NOTICE:  ivfflat index created with little data
 DETAIL:  This will cause low recall.

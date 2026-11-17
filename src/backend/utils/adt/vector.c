@@ -952,3 +952,80 @@ vector_spherical_distance_op(PG_FUNCTION_ARGS)
 
 	PG_RETURN_FLOAT8(acos(distance) / M_PI);
 }
+
+/*
+ * array_to_vector(integer[] | real[] | double precision[] | numeric[],
+ *                 typmod int4, explicit bool)
+ *
+ * Cast function behind the assignment casts from numeric arrays to vector
+ * (same behaviour as pgvector's casts): the array must be one-dimensional
+ * and contain no NULLs, the element count must match a vector(n) typmod,
+ * and every element must be finite after conversion to float4.
+ */
+Datum
+array_to_vector_cast(PG_FUNCTION_ARGS)
+{
+	ArrayType  *arr = PG_GETARG_ARRAYTYPE_P(0);
+	int32		typmod = PG_GETARG_INT32(1);
+	Oid			elemtype = ARR_ELEMTYPE(arr);
+	Vector	   *result;
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+	Datum	   *elems;
+	int			nelems;
+	int			i;
+
+	if (ARR_NDIM(arr) > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("array must be 1-D")));
+
+	if (ARR_HASNULL(arr) && array_contains_nulls(arr))
+		ereport(ERROR,
+				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+				 errmsg("array must not contain nulls")));
+
+	get_typlenbyvalalign(elemtype, &typlen, &typbyval, &typalign);
+	deconstruct_array(arr, elemtype, typlen, typbyval, typalign,
+					  &elems, NULL, &nelems);
+
+	vector_check_dim(nelems);
+	if (typmod != -1 && typmod != nelems)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("expected %d dimensions, not %d", typmod, nelems)));
+
+	result = InitVector(nelems);
+
+	for (i = 0; i < nelems; i++)
+	{
+		switch (elemtype)
+		{
+			case INT4OID:
+				result->x[i] = (float) DatumGetInt32(elems[i]);
+				break;
+			case FLOAT4OID:
+				result->x[i] = DatumGetFloat4(elems[i]);
+				break;
+			case FLOAT8OID:
+				result->x[i] = (float) DatumGetFloat8(elems[i]);
+				break;
+			case NUMERICOID:
+				result->x[i] = DatumGetFloat4(DirectFunctionCall1(numeric_float4,
+																  elems[i]));
+				break;
+			default:
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("unsupported array type %s for vector",
+								format_type_be(elemtype))));
+		}
+		vector_check_value(result->x[i]);
+	}
+
+	/* Elements of pass-by-reference types point into the array: free only the list */
+	pfree(elems);
+
+	PG_RETURN_VECTOR_P(result);
+}
