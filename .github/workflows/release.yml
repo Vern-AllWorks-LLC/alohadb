@@ -262,6 +262,7 @@ jobs:
             -c "CREATE EXTENSION pg_python CASCADE" \
             -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
             -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
+            -c "SELECT python_eval('import ssl, sqlite3, xue, xue._units_accel, xue._tensor_accel, xue._autodiff_accel; from xue.units import meters, seconds; ssl.create_default_context(); sqlite3.connect(\":memory:\").execute(\"select 1\"); return [xue.__version__, ssl.OPENSSL_VERSION, str((10 * meters) / (2 * seconds))]')" \
             | tee "$T/out.txt"
           grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
           "$B/pg_ctl" -D "$T/data" -m fast -w stop
@@ -351,6 +352,7 @@ jobs:
             -c "CREATE EXTENSION pg_python CASCADE" \
             -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
             -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
+            -c "SELECT python_eval('import ssl, sqlite3, xue, xue._units_accel, xue._tensor_accel, xue._autodiff_accel; from xue.units import meters, seconds; ssl.create_default_context(); sqlite3.connect(\":memory:\").execute(\"select 1\"); return [xue.__version__, ssl.OPENSSL_VERSION, str((10 * meters) / (2 * seconds))]')" \
             | /usr/bin/tee "$T/out.txt"
           /usr/bin/grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
           "$B/pg_ctl.exe" -D "$T/data" -m fast -w stop
