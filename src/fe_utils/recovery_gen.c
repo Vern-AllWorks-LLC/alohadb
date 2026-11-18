@@ -134,7 +134,7 @@ WriteRecoveryConfig(PGconn *pgconn, const char *target_dir, PQExpBuffer contents
 		PQserverVersion(pgconn) < MINIMUM_VERSION_FOR_RECOVERY_GUC;
 
 	snprintf(filename, MAXPGPATH, "%s/%s", target_dir,
-			 use_recovery_conf ? "recovery.conf" : "alohadb.auto.conf");
+			 use_recovery_conf ? "recovery.conf" : "postgresql.auto.conf");
 
 	cf = fopen(filename, use_recovery_conf ? "w" : "a");
 	if (cf == NULL)

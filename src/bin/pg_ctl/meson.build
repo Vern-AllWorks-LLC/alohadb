@@ -6,11 +6,11 @@ pg_ctl_sources = files(
 
 if host_system == 'windows'
   pg_ctl_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_ctl',
-    '--FILEDESC', 'al_ctl - starts/stops/restarts the AlohaDB server',])
+    '--NAME', 'pg_ctl',
+    '--FILEDESC', 'pg_ctl - starts/stops/restarts the AlohaDB server',])
 endif
 
-pg_ctl = executable('al_ctl',
+pg_ctl = executable('pg_ctl',
   pg_ctl_sources,
   dependencies: [frontend_code, libpq],
   kwargs: default_bin_args,

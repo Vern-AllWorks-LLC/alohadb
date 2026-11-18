@@ -15,11 +15,11 @@ pg_rewind_sources += xlogreader_sources
 
 if host_system == 'windows'
   pg_rewind_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_rewind',
-    '--FILEDESC', 'al_rewind - synchronize a data directory with another one forked from'])
+    '--NAME', 'pg_rewind',
+    '--FILEDESC', 'pg_rewind - synchronize a data directory with another one forked from'])
 endif
 
-pg_rewind = executable('al_rewind',
+pg_rewind = executable('pg_rewind',
   pg_rewind_sources,
   dependencies: [frontend_code, libpq, lz4, zstd],
   c_args: ['-DFRONTEND'], # needed for xlogreader et al

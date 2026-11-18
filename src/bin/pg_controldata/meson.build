@@ -6,11 +6,11 @@ pg_controldata_sources = files(
 
 if host_system == 'windows'
   pg_controldata_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_controldata',
-    '--FILEDESC', 'al_controldata - reads the data from pg_control',])
+    '--NAME', 'pg_controldata',
+    '--FILEDESC', 'pg_controldata - reads the data from pg_control',])
 endif
 
-pg_controldata = executable('al_controldata',
+pg_controldata = executable('pg_controldata',
   pg_controldata_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,

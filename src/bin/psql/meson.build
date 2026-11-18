@@ -50,11 +50,11 @@ psql_sources += sql_help
 
 if host_system == 'windows'
   psql_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'alsql',
-    '--FILEDESC', 'alsql - the AlohaDB interactive terminal',])
+    '--NAME', 'psql',
+    '--FILEDESC', 'psql - the AlohaDB interactive terminal',])
 endif
 
-psql = executable('alsql',
+psql = executable('psql',
   psql_sources,
   c_pch: pch_postgres_fe_h,
   include_directories: include_directories('.'),

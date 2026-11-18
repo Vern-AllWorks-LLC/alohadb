@@ -6,8 +6,8 @@
  * This module implements graph traversal operations as SPI-based
  * set-returning functions, providing:
  *
- *   - alohadb_graph_bfs(): Breadth-first search with cycle detection
- *   - alohadb_graph_shortest_path(): Dijkstra shortest path
+ *   - pg_graph_bfs(): Breadth-first search with cycle detection
+ *   - pg_graph_shortest_path(): Dijkstra shortest path
  *
  * These functions use the Server Programming Interface (SPI) to execute
  * internally-generated recursive CTE queries, produced by the parse_graph
@@ -335,7 +335,7 @@ table_has_column(Oid relid, const char *colname)
 /* ----------------------------------------------------------------
  *		SPI-based BFS Function
  *
- *		alohadb_graph_bfs(edge_table regclass, start_id int,
+ *		pg_graph_bfs(edge_table regclass, start_id int,
  *		                  max_depth int)
  *		RETURNS TABLE(node_id int, depth int, path int[])
  * ----------------------------------------------------------------
@@ -563,7 +563,7 @@ execute_native_bfs(Oid edge_relid, int32 start_id, int32 max_depth,
 
 
 /*
- * alohadb_graph_bfs - SQL-callable BFS traversal function
+ * pg_graph_bfs - SQL-callable BFS traversal function
  *
  * Arguments:
  *   edge_table regclass  - OID of the edge table
@@ -572,10 +572,10 @@ execute_native_bfs(Oid edge_relid, int32 start_id, int32 max_depth,
  *
  * Returns: TABLE(node_id int, depth int, path int[])
  */
-PG_FUNCTION_INFO_V1(alohadb_graph_bfs);
+PG_FUNCTION_INFO_V1(pg_graph_bfs);
 
 Datum
-alohadb_graph_bfs(PG_FUNCTION_ARGS)
+pg_graph_bfs(PG_FUNCTION_ARGS)
 {
 	Oid			edge_relid;
 	int32		start_id;
@@ -619,7 +619,7 @@ alohadb_graph_bfs(PG_FUNCTION_ARGS)
 /* ----------------------------------------------------------------
  *		SPI-based Shortest Path Function
  *
- *		alohadb_graph_shortest_path(edge_table regclass,
+ *		pg_graph_shortest_path(edge_table regclass,
  *		                            start_id int, end_id int)
  *		RETURNS TABLE(node_id int, total_cost float8, path int[])
  * ----------------------------------------------------------------
@@ -743,7 +743,7 @@ execute_shortest_path_via_spi(Oid edge_relid, int32 start_id, int32 end_id,
 
 
 /*
- * alohadb_graph_shortest_path - SQL-callable shortest path function
+ * pg_graph_shortest_path - SQL-callable shortest path function
  *
  * Arguments:
  *   edge_table regclass  - OID of the edge table
@@ -752,10 +752,10 @@ execute_shortest_path_via_spi(Oid edge_relid, int32 start_id, int32 end_id,
  *
  * Returns: TABLE(node_id int, total_cost float8, path int[])
  */
-PG_FUNCTION_INFO_V1(alohadb_graph_shortest_path);
+PG_FUNCTION_INFO_V1(pg_graph_shortest_path);
 
 Datum
-alohadb_graph_shortest_path(PG_FUNCTION_ARGS)
+pg_graph_shortest_path(PG_FUNCTION_ARGS)
 {
 	Oid			edge_relid;
 	int32		start_id;

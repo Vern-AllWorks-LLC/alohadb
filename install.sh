@@ -17,14 +17,14 @@
 set -euo pipefail
 
 # ---- Constants -------------------------------------------------------------
-ALOHADB_VERSION="20.3"
+ALOHADB_VERSION="21.0"
 MIN_CPUS=2
 MIN_RAM_MB=1024
 MIN_DISK_MB=2048
 DEFAULT_PREFIX="/var/lib/alohadb"
 DEFAULT_PORT=5433
 DB_USER="alohaadm"
-SHARED_PRELOAD="alohadb_audit,alohadb_cache,alohadb_cron,alohadb_pool,alohadb_query_store,alohadb_ratelimit,alohadb_scale"
+SHARED_PRELOAD="pg_audit,pg_cache,pg_cronjobs,pg_pool,pg_query_store,pg_ratelimit,pg_scale"
 
 # ---- Colors ----------------------------------------------------------------
 RED='\033[0;31m'
@@ -274,7 +274,7 @@ fi
 # ============================================================================
 echo ""
 echo -e "${BOLD}Configuration Mode${NC}"
-echo "  1) Local   - Standalone instance with local alohadb.conf"
+echo "  1) Local   - Standalone instance with local postgresql.conf"
 echo "  2) Remote  - Managed by a central AlohaDB management server"
 echo ""
 prompt CONFIG_MODE "Select mode (1 or 2)" "1"
@@ -394,12 +394,12 @@ chown -R "$DB_USER":"$DB_USER" "$INSTALL_PREFIX"
 # ============================================================================
 DATA_DIR="$INSTALL_PREFIX/data"
 
-if [[ -f "$DATA_DIR/PG_VERSION" ]] || [[ -f "$DATA_DIR/alohadb.pid" ]]; then
+if [[ -f "$DATA_DIR/PG_VERSION" ]] || [[ -f "$DATA_DIR/postmaster.pid" ]]; then
     warn "Data directory already initialized at $DATA_DIR. Skipping initdb."
 else
     echo ""
     info "Initializing data directory..."
-    sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/alinitdb" -D "$DATA_DIR" 2>&1 | tail -5
+    sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/initdb" -D "$DATA_DIR" 2>&1 | tail -5
     ok "Data directory initialized at $DATA_DIR"
 fi
 
@@ -409,10 +409,10 @@ fi
 echo ""
 info "Writing configuration..."
 
-CONF_FILE="$DATA_DIR/alohadb.conf"
-HBA_FILE="$DATA_DIR/al_hba.conf"
+CONF_FILE="$DATA_DIR/postgresql.conf"
+HBA_FILE="$DATA_DIR/pg_hba.conf"
 
-# -- alohadb.conf ------------------------------------------------------------
+# -- postgresql.conf ------------------------------------------------------------
 # Append AlohaDB-specific settings (don't overwrite existing PG defaults)
 cat >> "$CONF_FILE" <<ALOHACONF
 
@@ -422,35 +422,35 @@ listen_addresses = 'localhost'
 shared_preload_libraries = '${SHARED_PRELOAD}'
 
 # Audit logging
-alohadb.audit_enabled = on
-alohadb.audit_log_directory = '/var/log/alohadb/audit'
-alohadb.audit_log_format = 'csv'
-alohadb.audit_databases = '*'
-alohadb.audit_operations = 'insert,update,delete,create_role,alter_role,drop_role,grant,alter_system'
+pg_audit.enabled = on
+pg_audit.log_directory = '/var/log/alohadb/audit'
+pg_audit.log_format = 'csv'
+pg_audit.databases = '*'
+pg_audit.operations = 'insert,update,delete,create_role,alter_role,drop_role,grant,alter_system'
 
 # Cron
-alohadb.cron_database_name = 'alohadb'
+pg_cronjobs.database = 'alohadb'
 ALOHACONF
 
 if [[ "$REMOTE_MODE" == "on" ]]; then
     cat >> "$CONF_FILE" <<REMOTECONF
 
 # Remote management
-alohadb.remote_mode = on
-alohadb.remote_host = '${REMOTE_HOST}'
-alohadb.remote_port = ${REMOTE_PORT}
-alohadb.remote_password = '${REMOTE_PASSWORD_ENC}'
+pg_remote_config.mode = on
+pg_remote_config.host = '${REMOTE_HOST}'
+pg_remote_config.port = ${REMOTE_PORT}
+pg_remote_config.password = '${REMOTE_PASSWORD_ENC}'
 REMOTECONF
     ok "Remote management configured: ${REMOTE_HOST}:${REMOTE_PORT}"
 else
     ok "Local configuration written."
 fi
 
-# -- al_hba.conf: secure defaults -------------------------------------------
+# -- pg_hba.conf: secure defaults -------------------------------------------
 # Only allow local connections by default (not trust from 0.0.0.0/0)
 if ! grep -q "scram-sha-256" "$HBA_FILE" 2>/dev/null; then
     cat > "$HBA_FILE" <<HBACONF
-# AlohaDB Host-Based Authentication (al_hba.conf)
+# AlohaDB Host-Based Authentication (pg_hba.conf)
 # TYPE  DATABASE  USER  ADDRESS        METHOD
 
 # Local connections (Unix socket)
@@ -465,7 +465,7 @@ host    all       all   ::1/128        scram-sha-256
 # To allow remote connections, add lines like:
 # host  all       all   10.0.0.0/8     scram-sha-256
 HBACONF
-    ok "Secure al_hba.conf written (scram-sha-256, localhost only)."
+    ok "Secure pg_hba.conf written (scram-sha-256, localhost only)."
 fi
 
 # -- Create audit log directory ----------------------------------------------
@@ -484,7 +484,7 @@ if [[ -d /etc/systemd/system ]] && [[ ! -f "$SYSTEMD_FILE" ]]; then
     cat > "$SYSTEMD_FILE" <<SYSTEMD
 [Unit]
 Description=AlohaDB ${ALOHADB_VERSION} Database Server
-Documentation=https://opencan.ai/
+Documentation=https://vernallworks.com/docs-alohadb.php
 After=network-online.target
 Wants=network-online.target
 
@@ -492,7 +492,7 @@ Wants=network-online.target
 Type=notify
 User=${DB_USER}
 Group=${DB_USER}
-ExecStart=${INSTALL_PREFIX}/bin/alohadb -D ${DATA_DIR}
+ExecStart=${INSTALL_PREFIX}/bin/postgres -D ${DATA_DIR}
 ExecReload=/bin/kill -HUP \$MAINPID
 KillMode=mixed
 KillSignal=SIGINT
@@ -523,7 +523,7 @@ if [[ "$START_NOW" == "yes" ]]; then
         systemctl start alohadb
         systemctl enable alohadb 2>/dev/null || true
     else
-        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/al_ctl" \
+        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/pg_ctl" \
             -D "$DATA_DIR" \
             -l "$INSTALL_PREFIX/logfile" \
             start
@@ -532,27 +532,27 @@ if [[ "$START_NOW" == "yes" ]]; then
     # Wait for startup
     sleep 2
 
-    if sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/al_ctl" -D "$DATA_DIR" status &>/dev/null; then
+    if sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/pg_ctl" -D "$DATA_DIR" status &>/dev/null; then
         ok "AlohaDB is running on port $LISTEN_PORT."
 
         # Create default database
         info "Creating default database 'alohadb'..."
-        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/alsql" -p "$LISTEN_PORT" -d postgres \
+        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/psql" -p "$LISTEN_PORT" -d postgres \
             -c "CREATE DATABASE alohadb;" 2>/dev/null || true
 
         # Install core extensions in the default database
         info "Installing core extensions..."
-        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/alsql" -p "$LISTEN_PORT" -d alohadb -c "
-            CREATE EXTENSION IF NOT EXISTS alohadb_audit;
-            CREATE EXTENSION IF NOT EXISTS alohadb_cache;
-            CREATE EXTENSION IF NOT EXISTS alohadb_cron;
-            CREATE EXTENSION IF NOT EXISTS alohadb_query_store;
-            CREATE EXTENSION IF NOT EXISTS alohadb_ratelimit;
+        sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/psql" -p "$LISTEN_PORT" -d alohadb -c "
+            CREATE EXTENSION IF NOT EXISTS pg_audit;
+            CREATE EXTENSION IF NOT EXISTS pg_cache;
+            CREATE EXTENSION IF NOT EXISTS pg_cronjobs;
+            CREATE EXTENSION IF NOT EXISTS pg_query_store;
+            CREATE EXTENSION IF NOT EXISTS pg_ratelimit;
         " 2>&1 | grep -v "^$"
 
         if [[ "$REMOTE_MODE" == "on" ]]; then
-            sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/alsql" -p "$LISTEN_PORT" -d alohadb -c "
-                CREATE EXTENSION IF NOT EXISTS alohadb_remote_config;
+            sudo -u "$DB_USER" "$INSTALL_PREFIX/bin/psql" -p "$LISTEN_PORT" -d alohadb -c "
+                CREATE EXTENSION IF NOT EXISTS pg_remote_config;
             " 2>&1 | grep -v "^$"
         fi
 
@@ -583,14 +583,14 @@ echo -e "  Systemd service:    ${GREEN}alohadb.service${NC}"
 fi
 echo ""
 echo -e "  ${BOLD}Connect:${NC}"
-echo -e "    sudo -u $DB_USER $INSTALL_PREFIX/bin/alsql -p $LISTEN_PORT -d alohadb"
+echo -e "    sudo -u $DB_USER $INSTALL_PREFIX/bin/psql -p $LISTEN_PORT -d alohadb"
 echo ""
 echo -e "  ${BOLD}Service control:${NC}"
 if [[ -f "$SYSTEMD_FILE" ]]; then
 echo -e "    systemctl start|stop|restart|status alohadb"
 else
-echo -e "    sudo -u $DB_USER $INSTALL_PREFIX/bin/al_ctl -D $DATA_DIR start|stop|restart|status"
+echo -e "    sudo -u $DB_USER $INSTALL_PREFIX/bin/pg_ctl -D $DATA_DIR start|stop|restart|status"
 fi
 echo ""
-echo -e "  ${BOLD}User guide:${NC} https://opencan.ai/alohadb-guide.html"
+echo -e "  ${BOLD}User guide:${NC} https://vernallworks.com/docs-alohadb.php"
 echo ""

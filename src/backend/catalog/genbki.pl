@@ -2,9 +2,9 @@
 #----------------------------------------------------------------------
 #
 # genbki.pl
-#    Perl script that generates alohadb.bki and symbol definition
+#    Perl script that generates postgres.bki and symbol definition
 #    headers from specially formatted header files and data files.
-#    alohadb.bki is used to initialize the postgres template database.
+#    postgres.bki is used to initialize the postgres template database.
 #
 # Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
@@ -434,7 +434,7 @@ my %lookup_kind = (
 
 # Open temp files
 my $tmpext = ".tmp$$";
-my $bkifile = $output_path . 'alohadb.bki';
+my $bkifile = $output_path . 'postgres.bki';
 open my $bki, '>', $bkifile . $tmpext
   or die "can't open $bkifile$tmpext: $!";
 my $schemafile = $output_path . 'schemapg.h';
@@ -453,7 +453,7 @@ my $syscache_info_file = $output_path . 'syscache_info.h';
 open my $syscache_info_fh, '>', $syscache_info_file . $tmpext
   or die "can't open $syscache_info_file$tmpext: $!";
 
-# Generate alohadb.bki and pg_*_d.h headers.
+# Generate postgres.bki and pg_*_d.h headers.
 
 # version marker for .bki file
 print $bki "# PostgreSQL $major_version\n";
@@ -675,7 +675,7 @@ EOM
 			  if defined $symbol;
 		}
 
-		# Write to alohadb.bki
+		# Write to postgres.bki
 		print_bki_insert(\%bki_values, $schema);
 
 		# Emit OID symbol
@@ -893,7 +893,7 @@ sub gen_pg_attribute
 			  ($row{attnotnull} eq 't'
 				  && ($row{attlen} eq 'NAMEDATALEN' || $row{attlen} > 0));
 
-			# If it's bootstrapped, put an entry in alohadb.bki.
+			# If it's bootstrapped, put an entry in postgres.bki.
 			print_bki_insert(\%row, $schema) if $table->{bootstrap};
 
 			# Store schemapg entries for later.
@@ -904,7 +904,7 @@ sub gen_pg_attribute
 		}
 
 		# Generate entries for system attributes.
-		# We only need alohadb.bki entries, not schemapg.h entries.
+		# We only need postgres.bki entries, not schemapg.h entries.
 		if ($table->{bootstrap})
 		{
 			$attnum = 0;
@@ -990,7 +990,7 @@ sub morph_row_for_pgattr
 	return;
 }
 
-# Write an entry to alohadb.bki.
+# Write an entry to postgres.bki.
 sub print_bki_insert
 {
 	my $row = shift;
@@ -1030,7 +1030,7 @@ sub print_bki_insert
 # a catalog schema declaration in schemapg.h.
 #
 # The field values of a Schema_pg_xxx declaration are similar, but not
-# quite identical, to the corresponding values in alohadb.bki.
+# quite identical, to the corresponding values in postgres.bki.
 sub morph_row_for_schemapg
 {
 	my $row = shift;
@@ -1187,9 +1187,9 @@ Options:
     --set-version    PostgreSQL version number for initdb cross-check
     --include-path   Include path in source tree
 
-genbki.pl generates alohadb.bki and symbol definition
+genbki.pl generates postgres.bki and symbol definition
 headers from specially formatted header files and .dat
-files.  alohadb.bki is used to initialize the
+files.  postgres.bki is used to initialize the
 postgres template database.
 
 Report bugs to <pgsql-bugs\@lists.postgresql.org>.

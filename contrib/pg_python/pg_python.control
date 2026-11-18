@@ -1,0 +1,6 @@
+comment = 'AlohaDB Python - Python as a first-class workload with script registry and managed execution'
+default_version = '1.0'
+module_pathname = '$libdir/pg_python'
+schema = public
+relocatable = false
+requires = 'plpython3u'

@@ -307,7 +307,7 @@ init_ps_display(const char *fixed_part)
 	 */
 #define PROGRAM_NAME_PREFIX ""
 #else
-#define PROGRAM_NAME_PREFIX "alohadb: "
+#define PROGRAM_NAME_PREFIX "postgres: "
 #endif
 
 	if (*cluster_name == '\0')

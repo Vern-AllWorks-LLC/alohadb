@@ -74,7 +74,7 @@ extern void ApplyProfile(const char *profile_name);
  */
 
 /* SQL-callable functions */
-extern Datum alohadb_apply_profile(PG_FUNCTION_ARGS);
-extern Datum alohadb_detect_hardware(PG_FUNCTION_ARGS);
+extern Datum pg_apply_profile(PG_FUNCTION_ARGS);
+extern Datum pg_detect_hardware(PG_FUNCTION_ARGS);
 
 #endif							/* GUC_PROFILES_H */

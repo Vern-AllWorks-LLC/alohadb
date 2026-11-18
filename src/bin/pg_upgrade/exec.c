@@ -10,6 +10,7 @@
 #include "postgres_fe.h"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include "common/string.h"
 #include "pg_upgrade.h"
@@ -22,6 +23,66 @@ static void check_exec(const char *dir, const char *program, bool check_version)
 #ifdef WIN32
 static int	win32_check_directory_write_permissions(void);
 #endif
+
+
+/*
+ * AlohaDB releases before 21.0 installed the server programs under their own
+ * names (alohadb, al_ctl, alinitdb, alsql, ...) and named the data-directory
+ * files alohadb.conf, alohadb.auto.conf and alohadb.pid.  Clusters created by
+ * those releases must still be upgradable, so when a PostgreSQL-named file is
+ * missing but its legacy AlohaDB counterpart exists, use the legacy name.
+ */
+static bool
+file_exists_in(const char *dir, const char *name)
+{
+	char		path[MAXPGPATH];
+	struct stat st;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	return stat(path, &st) == 0;
+}
+
+const char *
+cluster_bin(const char *bindir, const char *program)
+{
+	char	   *legacy;
+
+	if (file_exists_in(bindir, program))
+		return program;
+	if (strcmp(program, "postgres") == 0)
+		legacy = pg_strdup("alohadb");
+	else if (strncmp(program, "pg_", 3) == 0)
+		legacy = psprintf("al_%s", program + 3);
+	else if (strcmp(program, "pgbench") == 0)
+		legacy = pg_strdup("albench");
+	else if (strcmp(program, "psql") == 0)
+		legacy = pg_strdup("alsql");
+	else
+		legacy = psprintf("al%s", program);
+	if (file_exists_in(bindir, legacy))
+		return legacy;
+	pg_free(legacy);
+	return program;
+}
+
+const char *
+datadir_file(const char *datadir, const char *file)
+{
+	static const char *const names[][2] = {
+		{"postmaster.pid", "alohadb.pid"},
+		{"postmaster.opts", "alohadb.opts"},
+		{"postgresql.conf", "alohadb.conf"},
+		{"postgresql.auto.conf", "alohadb.auto.conf"},
+	};
+
+	if (file_exists_in(datadir, file))
+		return file;
+	for (int i = 0; i < lengthof(names); i++)
+		if (strcmp(file, names[i][0]) == 0 &&
+			file_exists_in(datadir, names[i][1]))
+			return names[i][1];
+	return file;
+}
 
 
 /*
@@ -39,7 +100,8 @@ get_bin_version(ClusterInfo *cluster)
 	int			v1 = 0,
 				v2 = 0;
 
-	snprintf(cmd, sizeof(cmd), "\"%s/al_ctl\" --version", cluster->bindir);
+	snprintf(cmd, sizeof(cmd), "\"%s/%s\" --version", cluster->bindir,
+			 cluster_bin(cluster->bindir, "pg_ctl"));
 	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL ||
@@ -235,7 +297,8 @@ pid_lock_file_exists(const char *datadir)
 	char		path[MAXPGPATH];
 	int			fd;
 
-	snprintf(path, sizeof(path), "%s/alohadb.pid", datadir);
+	snprintf(path, sizeof(path), "%s/%s", datadir,
+			 datadir_file(datadir, "postmaster.pid"));
 
 	if ((fd = open(path, O_RDONLY, 0)) < 0)
 	{
@@ -428,28 +491,12 @@ check_bin_dir(ClusterInfo *cluster, bool check_versions)
 static void
 check_exec(const char *dir, const char *program, bool check_version)
 {
-	/*
-	 * AlohaDB installs the tools under its own file names, but each still
-	 * reports the upstream name in its version banner.  "program" is the
-	 * upstream name (used for the banner check); map it to the file name.
-	 */
-	static const char *const names[][2] = {
-		{"postgres", "alohadb"}, {"pg_controldata", "al_controldata"},
-		{"pg_ctl", "al_ctl"}, {"pg_resetwal", "al_resetwal"},
-		{"initdb", "alinitdb"}, {"pg_dump", "al_dump"},
-		{"pg_dumpall", "al_dumpall"}, {"pg_restore", "al_restore"},
-		{"psql", "alsql"}, {"vacuumdb", "alvacuumdb"},
-	};
-	const char *file = program;
+	const char *file = cluster_bin(dir, program);
 
 	char		path[MAXPGPATH];
 	char	   *line;
 	char		cmd[MAXPGPATH];
 	char		versionstr[128];
-
-	for (int i = 0; i < lengthof(names); i++)
-		if (strcmp(program, names[i][0]) == 0)
-			file = names[i][1];
 
 	snprintf(path, sizeof(path), "%s/%s", dir, file);
 

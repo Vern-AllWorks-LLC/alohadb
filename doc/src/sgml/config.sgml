@@ -4626,7 +4626,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
          or <link linkend="protocol-replication">replication</link> requests for
          other libraries will be refused. All users are subject to this
          restriction. The default is
-         <literal>'pgoutput, test_decoding, alohadb_cdc_arrow'</literal>:
+         <literal>'pgoutput, test_decoding, pg_cdc_arrow'</literal>:
          the two logical output plugins included in the standard
          <productname>PostgreSQL</productname> distribution plus AlohaDB's
          bundled Arrow change-data-capture plugin.
@@ -4665,7 +4665,7 @@ SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;
           requests will appear in the logs with a message similar to
 <programlisting>
 ERROR:  library "..." may not be used as an output plugin
-DETAIL:  The configuration parameter "output_plugin_libraries" (currently 'pgoutput, test_decoding, alohadb_cdc_arrow') does not name this library as a trusted output plugin.
+DETAIL:  The configuration parameter "output_plugin_libraries" (currently 'pgoutput, test_decoding, pg_cdc_arrow') does not name this library as a trusted output plugin.
 HINT:  If it is safe for all REPLICATION users to use this library as an output plugin, add it to "output_plugin_libraries" and reload the server configuration.
 </programlisting>
          </para>

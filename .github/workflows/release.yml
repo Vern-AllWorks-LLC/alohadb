@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 # Python runtime bundled into the Linux/macOS packages for PL/Python and
-# alohadb_python (relocatable CPython builds from python-build-standalone).
+# pg_python (relocatable CPython builds from python-build-standalone).
 env:
   PBS_RELEASE: '20261026'
   PBS_PYTHON: '3.12.16'
@@ -243,26 +243,26 @@ jobs:
           B="$T/$PKGNAME/bin"
           # No dependency may point outside the package (except the OS libraries).
           if [ "$(uname -s)" = "Linux" ]; then
-            bad=$(ldd "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
+            bad=$(ldd "$B/postgres" "$B/psql" "$T/$PKGNAME/lib/plpython3.so" | awk '$3 ~ /^\// {print $3}' | grep -v "^$T/" \
                   | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil|libgcc_s)\.so|/ld-linux' || true)
           else
-            bad=$(otool -L "$B/alohadb" "$B/alsql" "$T/$PKGNAME/lib/plpython3.so" \
+            bad=$(otool -L "$B/postgres" "$B/psql" "$T/$PKGNAME/lib/plpython3.so" \
                   | grep -E '/opt/homebrew|/usr/local/|/install/|'"$RUNNER_TEMP" || true)
           fi
           if [ -n "$bad" ]; then echo "Unbundled dependencies:"; echo "$bad"; exit 1; fi
-          "$B/alinitdb" -D "$T/data" -A trust -U ci --no-instructions
-          "$B/al_ctl" -D "$T/data" -l "$T/server.log" -o "-p 54329 -k $T" -w start || { cat "$T/server.log"; exit 1; }
-          "$B/alsql" -X -h "$T" -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
+          "$B/initdb" -D "$T/data" -A trust -U ci --no-instructions
+          "$B/pg_ctl" -D "$T/data" -l "$T/server.log" -o "-p 54329 -k $T" -w start || { cat "$T/server.log"; exit 1; }
+          "$B/psql" -X -h "$T" -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
             -c "SELECT version()" \
-            -c "CREATE EXTENSION alohadb_pg19compat" \
-            -c "CREATE EXTENSION alohadb_vector" \
+            -c "CREATE EXTENSION pg_compat19" \
+            -c "CREATE EXTENSION pg_vector" \
             -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2" \
-            -c "CREATE EXTENSION alohadb_python CASCADE" \
+            -c "CREATE EXTENSION pg_python CASCADE" \
             -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
             -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
             | tee "$T/out.txt"
           grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
-          "$B/al_ctl" -D "$T/data" -m fast -w stop
+          "$B/pg_ctl" -D "$T/data" -m fast -w stop
 
       # ---- Build: Windows (MSYS2 shell) -------------------------------------
       - name: Configure (Windows)
@@ -288,7 +288,7 @@ jobs:
           DESTDIR="$PWD/stage" ninja -C builddir install
           VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           NAME="alohadb-${VERSION}-${{ matrix.platform }}"
-          ROOT="$(dirname "$(dirname "$(find stage -name alohadb.exe | head -1)")")"
+          ROOT="$(dirname "$(dirname "$(find stage -name postgres.exe | head -1)")")"
           mkdir -p dist
           cp -r "$ROOT" "dist/$NAME"
           P="dist/$NAME"
@@ -333,21 +333,21 @@ jobs:
           B="$T/$PKGNAME/bin"
           # Only Windows system directories on PATH: every DLL must come from the package.
           export PATH="$B:/c/Windows/System32:/c/Windows"
-          "$B/alohadb.exe" --version
-          "$B/alsql.exe" --version
-          "$B/alinitdb.exe" -D "$T/data" -A trust -U ci --no-instructions
-          "$B/al_ctl.exe" -D "$T/data" -l "$T/server.log" -o "-p 54329" -w start || { cat "$T/server.log"; exit 1; }
-          "$B/alsql.exe" -X -h localhost -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
+          "$B/postgres.exe" --version
+          "$B/psql.exe" --version
+          "$B/initdb.exe" -D "$T/data" -A trust -U ci --no-instructions
+          "$B/pg_ctl.exe" -D "$T/data" -l "$T/server.log" -o "-p 54329" -w start || { cat "$T/server.log"; exit 1; }
+          "$B/psql.exe" -X -h localhost -p 54329 -U ci -d postgres -v ON_ERROR_STOP=1 \
             -c "SELECT version()" \
-            -c "CREATE EXTENSION alohadb_pg19compat" \
-            -c "CREATE EXTENSION alohadb_vector" \
+            -c "CREATE EXTENSION pg_compat19" \
+            -c "CREATE EXTENSION pg_vector" \
             -c "SELECT '[3,4]'::vector <-> '[0,0]'::vector AS l2" \
-            -c "CREATE EXTENSION alohadb_python CASCADE" \
+            -c "CREATE EXTENSION pg_python CASCADE" \
             -c "SELECT python_eval('import sys, ssl, sqlite3, json; return [sys.version.split()[0], sys.prefix]')" \
             -c "SELECT python_eval('return {\"sum\": args[\"a\"] + args[\"b\"]}', '{\"a\":2,\"b\":3}')" \
             | /usr/bin/tee "$T/out.txt"
           /usr/bin/grep -qi "${PKGNAME}.\{1,2\}python" "$T/out.txt" || { echo "PL/Python is not using the bundled runtime"; exit 1; }
-          "$B/al_ctl.exe" -D "$T/data" -m fast -w stop
+          "$B/pg_ctl.exe" -D "$T/data" -m fast -w stop
 
       # ---- Artifacts (always) and GitHub Release (tags / publish=true) ------
       - name: Upload build artifact

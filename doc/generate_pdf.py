@@ -300,19 +300,19 @@ def build_guide(doc: GuideDoc):
         "same backend process, buffer pool, WAL, MVCC, and SQL planner."
     )
     arch_rows = [
-        ("alohadb_cron",           "Background scheduler (pg_cron-compatible)"),
-        ("alohadb_pipeline",       "DAG task orchestration with topological dispatch"),
-        ("alohadb_kafka",          "Kafka / Kinesis consumer background worker"),
-        ("alohadb_objectstore",    "S3 / GCS / Azure Blob object storage"),
-        ("alohadb_vector",         "Vector type, IVFFlat ANN index, distance operators"),
-        ("alohadb_geo",            "Point, BBox, Polygon, Circle + ST_ functions"),
-        ("alohadb_parquet",        "Native Parquet reader (v1.1); read_csv, read_json"),
-        ("alohadb_unified",        "Streaming + batch unified view"),
-        ("alohadb_python",         "Inline Python scripting via PL/Python3"),
-        ("alohadb_model_registry", "ML model versioning, deploy/rollback, experiments"),
-        ("alohadb_ontology",       "RDF-style triple store and hierarchy traversal"),
-        ("alohadb_intent",         "Keyword-based intent classification and auto-tagging"),
-        ("alohadb_context",        "Contextual profile management and disambiguation"),
+        ("pg_cronjobs",           "Background scheduler (pg_cron-compatible)"),
+        ("pg_pipeline",       "DAG task orchestration with topological dispatch"),
+        ("pg_kafka",          "Kafka / Kinesis consumer background worker"),
+        ("pg_objectstore",    "S3 / GCS / Azure Blob object storage"),
+        ("pg_vector",         "Vector type, IVFFlat ANN index, distance operators"),
+        ("pg_geo",            "Point, BBox, Polygon, Circle + ST_ functions"),
+        ("pg_parquetio",        "Native Parquet reader (v1.1); read_csv, read_json"),
+        ("pg_unified",        "Streaming + batch unified view"),
+        ("pg_python",         "Inline Python scripting via PL/Python3"),
+        ("pg_model_registry", "ML model versioning, deploy/rollback, experiments"),
+        ("pg_ontology",       "RDF-style triple store and hierarchy traversal"),
+        ("pg_intent",         "Keyword-based intent classification and auto-tagging"),
+        ("pg_context",        "Contextual profile management and disambiguation"),
     ]
     doc.table(["Extension", "Purpose"], arch_rows, [55, 115])
 
@@ -326,7 +326,7 @@ def build_guide(doc: GuideDoc):
         ("RAM",              "4 GB minimum; 16 GB recommended for vector/analytics"),
         ("Disk",             "10 GB minimum; SSD recommended for OLAP workloads"),
         ("PostgreSQL",       "18.0 or later (bundled with AlohaDB packages)"),
-        ("Python",           "3.10+ with plpython3u (required for alohadb_python)"),
+        ("Python",           "3.10+ with plpython3u (required for pg_python)"),
         ("libcurl",          "7.68+ with OpenSSL backend (for objectstore / GCS OAuth2)"),
         ("OpenSSL",          "1.1.1+ or 3.x (SigV4 HMAC-SHA256 / RS256 JWT signing)"),
         ("librdkafka",       "1.9+ (optional; required for Kafka consumer support)"),
@@ -376,12 +376,12 @@ sudo ninja -C build install""")
     doc.h2("Post-Install")
     doc.code("""\
 # Add extensions to postgresql.conf
-shared_preload_libraries = 'alohadb_cron,alohadb_pipeline,alohadb_kafka'
+shared_preload_libraries = 'pg_cronjobs,pg_pipeline,pg_kafka'
 
 # Restart and create extensions
 sudo systemctl restart postgresql-18
-psql -U postgres -c "CREATE EXTENSION alohadb_vector;"
-psql -U postgres -c "CREATE EXTENSION alohadb_geo;" """)
+psql -U postgres -c "CREATE EXTENSION pg_vector;"
+psql -U postgres -c "CREATE EXTENSION pg_geo;" """)
 
     # ─────────────────────────────────────────────────
     # 4. Installation – Windows
@@ -442,21 +442,21 @@ pg_ctl -D $PGDATA start""")
 psql -U postgres
 
 -- Core extensions (add to shared_preload_libraries first):
-CREATE EXTENSION alohadb_cron;
-CREATE EXTENSION alohadb_pipeline;
-CREATE EXTENSION alohadb_kafka;
+CREATE EXTENSION pg_cronjobs;
+CREATE EXTENSION pg_pipeline;
+CREATE EXTENSION pg_kafka;
 
 -- Standalone extensions (no preload required):
-CREATE EXTENSION alohadb_vector;
-CREATE EXTENSION alohadb_geo;
-CREATE EXTENSION alohadb_parquet;
-CREATE EXTENSION alohadb_unified;
-CREATE EXTENSION alohadb_python;
-CREATE EXTENSION alohadb_model_registry;
-CREATE EXTENSION alohadb_objectstore;
-CREATE EXTENSION alohadb_ontology;
-CREATE EXTENSION alohadb_intent;
-CREATE EXTENSION alohadb_context;""")
+CREATE EXTENSION pg_vector;
+CREATE EXTENSION pg_geo;
+CREATE EXTENSION pg_parquetio;
+CREATE EXTENSION pg_unified;
+CREATE EXTENSION pg_python;
+CREATE EXTENSION pg_model_registry;
+CREATE EXTENSION pg_objectstore;
+CREATE EXTENSION pg_ontology;
+CREATE EXTENSION pg_intent;
+CREATE EXTENSION pg_context;""")
 
     doc.para("Verify all extensions:")
     doc.code("""\
@@ -470,15 +470,15 @@ ORDER BY name;""")
     # ─────────────────────────────────────────────────
     doc.h1("Extension Reference")
 
-    # ── 7.1 alohadb_vector ──────────────────────────
-    doc.h2("alohadb_vector -- Vector Similarity Search")
+    # ── 7.1 pg_vector ──────────────────────────
+    doc.h2("pg_vector -- Vector Similarity Search")
     doc.para(
         "Provides the VECTOR type, L2/cosine/dot-product distance operators, and an "
         "IVFFlat approximate nearest-neighbour (ANN) index using Lloyd's k-means clustering."
     )
     doc.h3("Create a vector index and search")
     doc.code("""\
-CREATE EXTENSION alohadb_vector;
+CREATE EXTENSION pg_vector;
 
 -- Create index (128 lists for ~100k vectors)
 SELECT vector_index_create('products', 'embedding', 128);
@@ -516,15 +516,15 @@ SELECT vector_neg_dot_product('[1,2]'::vector, '[3,4]'::vector);""")
     ]
     doc.table(["Function", "Description"], fn_vec, [90, 80])
 
-    # ── 7.2 alohadb_geo ─────────────────────────────
-    doc.h2("alohadb_geo -- Geospatial Operations")
+    # ── 7.2 pg_geo ─────────────────────────────
+    doc.h2("pg_geo -- Geospatial Operations")
     doc.para(
         "Four native types (GeoPoint, GeoBBox, GeoPolygon, GeoCircle) with ST_-prefixed "
         "spatial functions including Haversine great-circle distance and ray-casting "
         "point-in-polygon."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_geo;
+CREATE EXTENSION pg_geo;
 
 -- Types
 SELECT '40.7128,-74.0060'::geo_point AS nyc;
@@ -558,14 +558,14 @@ SELECT geo_st_bbox('POLYGON((0 0,1 0,1 1,0 1,0 0))'::geo_polygon);""")
     ]
     doc.table(["Function", "Description"], fn_geo, [90, 80])
 
-    # ── 7.3 alohadb_parquet ──────────────────────────
-    doc.h2("alohadb_parquet -- Parquet / CSV / JSON File Reader")
+    # ── 7.3 pg_parquetio ──────────────────────────
+    doc.h2("pg_parquetio -- Parquet / CSV / JSON File Reader")
     doc.para(
         "Native Parquet v1.1 reader with Snappy decompression and PLAIN/DICTIONARY "
         "encoding support. Also provides read_csv and read_json set-returning functions."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_parquet VERSION '1.1';
+CREATE EXTENSION pg_parquetio VERSION '1.1';
 
 -- Read a Parquet file
 SELECT * FROM read_parquet('/data/sales.parquet');
@@ -580,16 +580,16 @@ SELECT * FROM read_csv('/tmp/data.csv');
 SELECT * FROM read_json('/tmp/events.jsonl');
 
 -- Upgrade from 1.0 to 1.1
-ALTER EXTENSION alohadb_parquet UPDATE TO '1.1';""")
+ALTER EXTENSION pg_parquetio UPDATE TO '1.1';""")
 
-    # ── 7.4 alohadb_unified ──────────────────────────
-    doc.h2("alohadb_unified -- Streaming + Batch Unified View")
+    # ── 7.4 pg_unified ──────────────────────────
+    doc.h2("pg_unified -- Streaming + Batch Unified View")
     doc.para(
         "Combines a batch (cold) table with a streaming event buffer into a single SQL "
         "view via UNION ALL. Supports ingest, flush, and purge."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_unified;
+CREATE EXTENSION pg_unified;
 
 CREATE TABLE orders (id bigserial PRIMARY KEY, customer text, amount numeric, status text);
 INSERT INTO orders VALUES (1,'alice',99,'completed'),(2,'bob',149,'completed');
@@ -610,15 +610,15 @@ SELECT unified_flush('orders_stream') AS rows_flushed;
 -- Stats
 SELECT * FROM unified_stats('orders_stream');""")
 
-    # ── 7.5 alohadb_pipeline ────────────────────────
-    doc.h2("alohadb_pipeline -- DAG Task Orchestration")
+    # ── 7.5 pg_pipeline ────────────────────────
+    doc.h2("pg_pipeline -- DAG Task Orchestration")
     doc.para(
         "Declare pipelines as directed acyclic graphs (DAGs) of SQL tasks with "
         "dependency edges. A background worker uses Kahn's topological sort to "
         "dispatch ready tasks up to pipeline_max_parallel concurrently."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_pipeline;
+CREATE EXTENSION pg_pipeline;
 
 -- Create pipeline
 SELECT pipeline_create('nightly_etl', 'Nightly data pipeline');
@@ -653,14 +653,14 @@ SELECT * FROM pipeline_run_status(1);""")
     ]
     doc.table(["Function", "Description"], fn_pipe, [90, 80])
 
-    # ── 7.6 alohadb_kafka ───────────────────────────
-    doc.h2("alohadb_kafka -- Kafka / Kinesis Consumer")
+    # ── 7.6 pg_kafka ───────────────────────────
+    doc.h2("pg_kafka -- Kafka / Kinesis Consumer")
     doc.para(
         "Background worker that polls Kafka topics (or AWS Kinesis shards) and stores "
-        "messages in alohadb_kafka_messages. Requires librdkafka for Kafka support."
+        "messages in pg_kafka_messages. Requires librdkafka for Kafka support."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_kafka;
+CREATE EXTENSION pg_kafka;
 
 -- Register a Kafka consumer
 SELECT kafka_consumer_register(
@@ -685,14 +685,14 @@ ORDER BY received_at DESC LIMIT 10;
 -- Purge consumed messages
 SELECT kafka_consumer_purge('events_consumer');""")
 
-    # ── 7.7 alohadb_objectstore ─────────────────────
-    doc.h2("alohadb_objectstore -- S3 / GCS / Azure Object Store")
+    # ── 7.7 pg_objectstore ─────────────────────
+    doc.h2("pg_objectstore -- S3 / GCS / Azure Object Store")
     doc.para(
         "Unified object storage API for AWS S3 (SigV4), Google Cloud Storage (OAuth2 JWT), "
         "and Azure Blob Storage (SAS tokens). Requires libcurl and OpenSSL."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_objectstore;
+CREATE EXTENSION pg_objectstore;
 
 -- Register S3 credentials
 SELECT objectstore_register_credential(
@@ -718,14 +718,14 @@ SELECT key, size_bytes FROM objectstore_list('my_s3', 's3://my-bucket/data/');
 -- Delete
 SELECT objectstore_delete('my_s3', 's3://my-bucket/data/report.csv');""")
 
-    # ── 7.8 alohadb_python ──────────────────────────
-    doc.h2("alohadb_python -- Inline Python Scripting")
+    # ── 7.8 pg_python ──────────────────────────
+    doc.h2("pg_python -- Inline Python Scripting")
     doc.para(
         "Execute Python 3 code inline, or register named scripts for reuse. "
         "Requires PostgreSQL built with plpython3u."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_python;
+CREATE EXTENSION pg_python;
 
 -- Inline eval
 SELECT python_eval('_result = 2 ** 10') AS power;
@@ -751,14 +751,14 @@ SELECT python_exec('greet', '{"name": "AlohaDB"}') AS greeting;
 -- List registered scripts
 SELECT script_name, version_num FROM python_list();""")
 
-    # ── 7.9 alohadb_model_registry ──────────────────
-    doc.h2("alohadb_model_registry -- ML Model Registry")
+    # ── 7.9 pg_model_registry ──────────────────
+    doc.h2("pg_model_registry -- ML Model Registry")
     doc.para(
         "Version-controlled registry for machine learning models. Track versions, "
         "deployments, experiments, and parameter sets in PostgreSQL."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_model_registry;
+CREATE EXTENSION pg_model_registry;
 
 -- Register a model
 SELECT model_register('fraud_detector', 'xgboost', 'XGBoost fraud detection model');
@@ -782,14 +782,14 @@ SELECT experiment_log('fraud_detector', 'grid_search_2026',
 -- List models
 SELECT model_name, framework, deployed_version FROM model_list();""")
 
-    # ── 7.10 alohadb_ontology ───────────────────────
-    doc.h2("alohadb_ontology -- RDF Triple Store")
+    # ── 7.10 pg_ontology ───────────────────────
+    doc.h2("pg_ontology -- RDF Triple Store")
     doc.para(
         "Store typed subject/predicate/object triples for knowledge graphs, ontologies, "
         "and entity relationship networks."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_ontology;
+CREATE EXTENSION pg_ontology;
 
 -- Assert triples
 SELECT ontology_assert('Apple_Inc', 'type',         'Company');
@@ -811,14 +811,14 @@ SELECT * FROM ontology_traverse('iPhone', 'madeBy', 3);
 -- Stats
 SELECT * FROM ontology_stats();""")
 
-    # ── 7.11 alohadb_intent ─────────────────────────
-    doc.h2("alohadb_intent -- Intent Classification")
+    # ── 7.11 pg_intent ─────────────────────────
+    doc.h2("pg_intent -- Intent Classification")
     doc.para(
         "Keyword-based intent registration and document tagging with hierarchical "
         "parent-child intents and automatic scoring inference."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_intent;
+CREATE EXTENSION pg_intent;
 
 -- Register intents
 SELECT intent_register('purchase', 'Buy/order intent',
@@ -844,14 +844,14 @@ SELECT doc_id FROM intent_find('complaint') ORDER BY doc_id;
 -- Ancestor chain
 SELECT ancestor, depth FROM intent_ancestors('complaint') ORDER BY depth;""")
 
-    # ── 7.12 alohadb_context ────────────────────────
-    doc.h2("alohadb_context -- Context Disambiguation")
+    # ── 7.12 pg_context ────────────────────────
+    doc.h2("pg_context -- Context Disambiguation")
     doc.para(
         "Resolves ambiguous terms to contextual meanings. Register context profiles "
         "with aliases and select the best match for a given context label."
     )
     doc.code("""\
-CREATE EXTENSION alohadb_context;
+CREATE EXTENSION pg_context;
 
 -- Register context profiles
 SELECT context_register('apple', 'technology',
@@ -987,17 +987,17 @@ JOIN   pg_stat_activity blocking
         "Parameters marked (*) require a server restart."
     )
     guc_rows = [
-        ("alohadb.pipeline_check_interval", "5",    "Seconds between pipeline scheduler ticks"),
-        ("alohadb.pipeline_max_parallel",   "4",    "Max tasks dispatched simultaneously"),
-        ("alohadb.pipeline_database",       "postgres", "Database for pipeline worker"),
-        ("alohadb.kafka_poll_interval_ms",  "500",  "Kafka consumer poll interval (ms)"),
-        ("alohadb.kafka_database",          "postgres", "Database for Kafka worker"),
-        ("alohadb.cron_check_interval",     "10",   "Seconds between cron scheduler ticks (*)"),
-        ("alohadb.cron_database",           "postgres", "Database for cron worker (*)"),
-        ("alohadb.vector_ivfflat_probes",   "8",    "IVFFlat search probe count"),
-        ("alohadb.vector_max_dims",         "2000", "Maximum vector dimensions"),
-        ("alohadb.parquet_allowed_dirs",    "/data,/tmp", "Comma-separated allowed paths"),
-        ("alohadb.objectstore_timeout_ms",  "30000","libcurl request timeout (ms)"),
+        ("pg_pipeline.check_interval", "5",    "Seconds between pipeline scheduler ticks"),
+        ("pg_pipeline.max_parallel",   "4",    "Max tasks dispatched simultaneously"),
+        ("pg_pipeline.database",       "postgres", "Database for pipeline worker"),
+        ("pg_kafka.poll_interval_ms",  "500",  "Kafka consumer poll interval (ms)"),
+        ("pg_kafka.database",          "postgres", "Database for Kafka worker"),
+        ("pg_cronjobs.check_interval",     "10",   "Seconds between cron scheduler ticks (*)"),
+        ("pg_cronjobs.database",           "postgres", "Database for cron worker (*)"),
+        ("pg_vector.ivfflat_probes",   "8",    "IVFFlat search probe count"),
+        ("pg_vector.max_dims",         "2000", "Maximum vector dimensions"),
+        ("pg_parquetio.allowed_dirs",    "/data,/tmp", "Comma-separated allowed paths"),
+        ("pg_objectstore.timeout_ms",  "30000","libcurl request timeout (ms)"),
     ]
     doc.table(["GUC Parameter", "Default", "Description"], guc_rows, [75, 22, 73])
 
@@ -1019,15 +1019,15 @@ meson test -C build --suite regression -v""")
 
     doc.para("Run a single extension's tests:")
     doc.code("""\
-meson test -C build alohadb_vector/regression
-meson test -C build alohadb_geo/regression""")
+meson test -C build pg_vector/regression
+meson test -C build pg_geo/regression""")
 
     doc.h2("Smoke Test")
     doc.code("""\
 psql -U postgres <<'SQL'
-CREATE EXTENSION IF NOT EXISTS alohadb_vector;
+CREATE EXTENSION IF NOT EXISTS pg_vector;
 SELECT vector_l2_distance('[1,2,3]'::vector,'[4,5,6]'::vector) AS dist;
-DROP EXTENSION alohadb_vector;
+DROP EXTENSION pg_vector;
 SQL""")
 
     doc.h2("Performance Benchmark")
@@ -1069,7 +1069,7 @@ FROM   vector_index_search('bench_vecs_v_idx', (SELECT v FROM bench_vecs LIMIT 1
             "SELECT * FROM pg_stat_activity WHERE backend_type LIKE '%alohadb%';",
         ),
         (
-            "alohadb_python: ERROR: language plpython3u does not exist",
+            "pg_python: ERROR: language plpython3u does not exist",
             "PostgreSQL was not built with PL/Python3. Install the plpython3u package: "
             "apt install postgresql-plpython3-18 (Debian) or dnf install postgresql18-plpython3 (RHEL).",
         ),
@@ -1080,7 +1080,7 @@ FROM   vector_index_search('bench_vecs_v_idx', (SELECT v FROM bench_vecs LIMIT 1
         ),
         (
             "read_parquet: ERROR: path not in allowed directories",
-            "Set alohadb.parquet_allowed_dirs = '/your/data/path' in postgresql.conf "
+            "Set pg_parquetio.allowed_dirs = '/your/data/path' in postgresql.conf "
             "and reload: SELECT pg_reload_conf();",
         ),
         (
@@ -1128,18 +1128,18 @@ SELECT log_time, message FROM pg_log_file_settings;  -- find log path
 
     doc.h2("AlohaDB 20.0 -- What's New")
     new_features = [
-        "alohadb_vector: IVFFlat ANN index with Lloyd's k-means training",
-        "alohadb_geo: Native geospatial types and 10 ST_ functions (Haversine, PIP, shoelace)",
-        "alohadb_parquet v1.1: Full column reader with Snappy decompression and DICTIONARY encoding",
-        "alohadb_unified: Streaming + batch UNION ALL view with flush and purge",
-        "alohadb_pipeline: DAG orchestration background worker with Kahn topological dispatch",
-        "alohadb_kafka: Kafka/Kinesis consumer background worker (librdkafka)",
-        "alohadb_objectstore: Unified S3/GCS/Azure API (SigV4, OAuth2 JWT, SAS tokens)",
-        "alohadb_python: Inline Python scripting + named script registry",
-        "alohadb_model_registry: ML model versioning, deployment, experiments",
-        "alohadb_ontology: RDF triple store with graph traversal",
-        "alohadb_intent: Keyword-based intent hierarchy and auto-tagging",
-        "alohadb_context: Contextual disambiguation and batch resolution",
+        "pg_vector: IVFFlat ANN index with Lloyd's k-means training",
+        "pg_geo: Native geospatial types and 10 ST_ functions (Haversine, PIP, shoelace)",
+        "pg_parquetio v1.1: Full column reader with Snappy decompression and DICTIONARY encoding",
+        "pg_unified: Streaming + batch UNION ALL view with flush and purge",
+        "pg_pipeline: DAG orchestration background worker with Kahn topological dispatch",
+        "pg_kafka: Kafka/Kinesis consumer background worker (librdkafka)",
+        "pg_objectstore: Unified S3/GCS/Azure API (SigV4, OAuth2 JWT, SAS tokens)",
+        "pg_python: Inline Python scripting + named script registry",
+        "pg_model_registry: ML model versioning, deployment, experiments",
+        "pg_ontology: RDF triple store with graph traversal",
+        "pg_intent: Keyword-based intent hierarchy and auto-tagging",
+        "pg_context: Contextual disambiguation and batch resolution",
     ]
     for f in new_features:
         doc.bullet(f)

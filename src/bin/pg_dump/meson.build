@@ -35,11 +35,11 @@ pg_dump_sources = files(
 
 if host_system == 'windows'
   pg_dump_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_dump',
-    '--FILEDESC', 'al_dump - backup one AlohaDB database',])
+    '--NAME', 'pg_dump',
+    '--FILEDESC', 'pg_dump - backup one AlohaDB database',])
 endif
 
-pg_dump = executable('al_dump',
+pg_dump = executable('pg_dump',
   pg_dump_sources,
   link_with: [pg_dump_common],
   dependencies: [frontend_code, libpq, zlib],
@@ -54,11 +54,11 @@ pg_dumpall_sources = files(
 
 if host_system == 'windows'
   pg_dumpall_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_dumpall',
-    '--FILEDESC', 'al_dumpall - backup AlohaDB databases'])
+    '--NAME', 'pg_dumpall',
+    '--FILEDESC', 'pg_dumpall - backup AlohaDB databases'])
 endif
 
-pg_dumpall = executable('al_dumpall',
+pg_dumpall = executable('pg_dumpall',
   pg_dumpall_sources,
   link_with: [pg_dump_common],
   dependencies: [frontend_code, libpq, zlib],
@@ -73,11 +73,11 @@ pg_restore_sources = files(
 
 if host_system == 'windows'
   pg_restore_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_restore',
-    '--FILEDESC', 'al_restore - restore AlohaDB databases'])
+    '--NAME', 'pg_restore',
+    '--FILEDESC', 'pg_restore - restore AlohaDB databases'])
 endif
 
-pg_restore = executable('al_restore',
+pg_restore = executable('pg_restore',
   pg_restore_sources,
   link_with: [pg_dump_common],
   dependencies: [frontend_code, libpq, zlib],

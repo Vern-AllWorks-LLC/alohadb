@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+#
+# pg_alohadb_convert_sql -- rewrite SQL scripts, dumps, configuration files
+# and shell scripts written for AlohaDB 20.x to the AlohaDB 21 names:
+#
+#   * extensions     alohadb_vault -> pg_vault, alohadb_cron -> pg_cronjobs, ...
+#   * their objects  alohadb_vault_store() -> pg_vault_store(), ...
+#   * settings       alohadb.audit_enabled -> pg_audit.enabled, ...
+#   * programs       alsql -> psql, al_ctl -> pg_ctl, alinitdb -> initdb, ...
+#   * data files     alohadb.conf -> postgresql.conf, al_hba.conf -> pg_hba.conf
+#
+# Usage:
+#   pg_alohadb_convert_sql FILE...            convert files in place (FILE.bak kept)
+#   pg_alohadb_convert_sql --check FILE...    only report what would change
+#   pg_alohadb_convert_sql < in.sql > out.sql
+#
+# Only names that AlohaDB itself defined are changed; your own objects are
+# left alone unless their names start with one of those names.  Review the
+# report (or the diff against FILE.bak) before using the result.
+#
+# Copyright (c) 2026, AlohaDB
+#
+# src/bin/pg_alohadb_convert/pg_alohadb_convert_sql
+#
+# Generated from rename_map.json by generate.py -- do not edit.
+
+import argparse
+import collections
+import os
+import re
+import shutil
+import sys
+
+@COMMON@
+def main():
+    ap = argparse.ArgumentParser(
+        description="Convert SQL scripts and other files from AlohaDB 20.x "
+                    "names (alohadb_*) to AlohaDB 21 names (pg_*).")
+    ap.add_argument("files", nargs="*",
+                    help="files to convert in place (default: stdin to stdout)")
+    ap.add_argument("--check", action="store_true",
+                    help="report the changes without writing anything")
+    ap.add_argument("--no-backup", action="store_true",
+                    help="do not keep FILE.bak copies")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="do not print the report")
+    args = ap.parse_args()
+
+    total = collections.Counter()
+    status = 0
+
+    if not args.files:
+        counts = collections.Counter()
+        out = convert(sys.stdin.read(), counts)
+        if not args.check:
+            sys.stdout.write(out)
+        total.update(counts)
+    else:
+        for path in args.files:
+            try:
+                with open(path, encoding="utf-8", newline="") as f:
+                    text = f.read()
+            except (OSError, UnicodeDecodeError) as e:
+                print("pg_alohadb_convert_sql: %s: %s" % (path, e), file=sys.stderr)
+                status = 1
+                continue
+            counts = collections.Counter()
+            out = convert(text, counts)
+            total.update(counts)
+            if out == text:
+                if not args.quiet:
+                    print("%s: no changes" % path, file=sys.stderr)
+                continue
+            if not args.quiet:
+                print("%s: %d change(s)" % (path, sum(counts.values())), file=sys.stderr)
+            if args.check:
+                continue
+            if not args.no_backup:
+                shutil.copy2(path, path + ".bak")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8", newline="") as f:
+                f.write(out)
+            shutil.copymode(path, tmp)
+            os.replace(tmp, path)
+
+    if not args.quiet and total:
+        print("renamed:", file=sys.stderr)
+        for (old, new), n in sorted(total.items()):
+            print("  %-40s -> %-36s %5d" % (old, new, n), file=sys.stderr)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

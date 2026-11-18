@@ -341,18 +341,18 @@ header.doc-header .meta {
     <li><a href="#first-steps">First Steps</a></li>
 
     <li class="section-header"><a>Extensions</a></li>
-    <li><a href="#ext-parquet">alohadb_parquet</a></li>
-    <li><a href="#ext-vector">alohadb_vector</a></li>
-    <li><a href="#ext-geo">alohadb_geo</a></li>
-    <li><a href="#ext-ontology">alohadb_ontology</a></li>
-    <li><a href="#ext-context">alohadb_context</a></li>
-    <li><a href="#ext-intent">alohadb_intent</a></li>
-    <li><a href="#ext-python">alohadb_python</a></li>
-    <li><a href="#ext-unified">alohadb_unified</a></li>
-    <li><a href="#ext-pipeline">alohadb_pipeline</a></li>
-    <li><a href="#ext-kafka">alohadb_kafka</a></li>
-    <li><a href="#ext-objectstore">alohadb_objectstore</a></li>
-    <li><a href="#ext-model-registry">alohadb_model_registry</a></li>
+    <li><a href="#ext-parquet">pg_parquetio</a></li>
+    <li><a href="#ext-vector">pg_vector</a></li>
+    <li><a href="#ext-geo">pg_geo</a></li>
+    <li><a href="#ext-ontology">pg_ontology</a></li>
+    <li><a href="#ext-context">pg_context</a></li>
+    <li><a href="#ext-intent">pg_intent</a></li>
+    <li><a href="#ext-python">pg_python</a></li>
+    <li><a href="#ext-unified">pg_unified</a></li>
+    <li><a href="#ext-pipeline">pg_pipeline</a></li>
+    <li><a href="#ext-kafka">pg_kafka</a></li>
+    <li><a href="#ext-objectstore">pg_objectstore</a></li>
+    <li><a href="#ext-model-registry">pg_model_registry</a></li>
     <li><a href="#ext-other">Other Extensions</a></li>
 
     <li class="section-header"><a>Reference</a></li>
@@ -507,11 +507,11 @@ psql -U alohadb -h localhost -p 5432 postgres
 SELECT version();
 
 ## Load an extension
-CREATE EXTENSION alohadb_vector;</code></pre>
+CREATE EXTENSION pg_vector;</code></pre>
 
 <div class="warning">
   <strong>Warning</strong>
-  Extensions that use background workers (<code>alohadb_cron</code>, <code>alohadb_pipeline</code>, <code>alohadb_kafka</code>) must be listed in <code>shared_preload_libraries</code> in <code>postgresql.conf</code> before the server starts. Adding them after startup requires a server restart.
+  Extensions that use background workers (<code>pg_cronjobs</code>, <code>pg_pipeline</code>, <code>pg_kafka</code>) must be listed in <code>shared_preload_libraries</code> in <code>postgresql.conf</code> before the server starts. Adding them after startup requires a server restart.
 </div>
 
 <!-- ================================================================ -->
@@ -564,7 +564,7 @@ sc query alohadb-20</code></pre>
 
 <div class="note">
   <strong>Note</strong>
-  On Windows, the Python-dependent extension (<code>alohadb_python</code>) requires <strong>Python 3.9+</strong> to be installed system-wide and the <code>python3.dll</code> to be on <code>PATH</code>. Install Python from <a href="https://www.python.org">python.org</a> and check "Add Python to PATH".
+  On Windows, the Python-dependent extension (<code>pg_python</code>) requires <strong>Python 3.9+</strong> to be installed system-wide and the <code>python3.dll</code> to be on <code>PATH</code>. Install Python from <a href="https://www.python.org">python.org</a> and check "Add Python to PATH".
 </div>
 
 <!-- ================================================================ -->
@@ -641,10 +641,10 @@ GRANT ALL PRIVILEGES ON DATABASE myapp TO appuser;
 <h3>Enable Extensions</h3>
 
 <pre><code>-- Enable AlohaDB extensions
-CREATE EXTENSION alohadb_vector;
-CREATE EXTENSION alohadb_geo;
-CREATE EXTENSION alohadb_parquet;
-CREATE EXTENSION alohadb_ontology;
+CREATE EXTENSION pg_vector;
+CREATE EXTENSION pg_geo;
+CREATE EXTENSION pg_parquetio;
+CREATE EXTENSION pg_ontology;
 
 -- Verify
 SELECT extname, extversion
@@ -656,27 +656,27 @@ ORDER BY extname;</code></pre>
 
 <p>Add to <code>postgresql.conf</code> before server start:</p>
 
-<pre><code>shared_preload_libraries = 'alohadb_cron,alohadb_pipeline,alohadb_kafka'
+<pre><code>shared_preload_libraries = 'pg_cronjobs,pg_pipeline,pg_kafka'
 
 # Optional tuning
-alohadb.cron_check_interval    = 60     # seconds
-alohadb.pipeline_check_interval = 5     # seconds
-alohadb.pipeline_max_parallel   = 4
-alohadb.kafka_poll_interval_ms  = 1000</code></pre>
+pg_cronjobs.check_interval    = 60     # seconds
+pg_pipeline.check_interval = 5     # seconds
+pg_pipeline.max_parallel   = 4
+pg_kafka.poll_interval_ms  = 1000</code></pre>
 
 <!-- ================================================================ -->
 <hr>
 <h2>Extension Reference</h2>
 
 <!-- ================================================================ -->
-<h2 id="ext-parquet">alohadb_parquet <span class="badge">v1.1</span></h2>
+<h2 id="ext-parquet">pg_parquetio <span class="badge">v1.1</span></h2>
 
 <p>Read Parquet, CSV, and JSON files directly from SQL. Version 1.1 adds a full Parquet column reader supporting PLAIN and PLAIN_DICTIONARY encoding with UNCOMPRESSED and SNAPPY compression.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_parquet;
+<pre><code>CREATE EXTENSION pg_parquetio;
 -- or upgrade from 1.0:
-ALTER EXTENSION alohadb_parquet UPDATE TO '1.1';</code></pre>
+ALTER EXTENSION pg_parquetio UPDATE TO '1.1';</code></pre>
 
 <h3>Functions</h3>
 <table>
@@ -690,7 +690,7 @@ ALTER EXTENSION alohadb_parquet UPDATE TO '1.1';</code></pre>
 
 <h3>Configuration</h3>
 <pre><code>-- Allow reads from specific directories
-SET alohadb.parquet_allowed_paths = '/data/files,/tmp';</code></pre>
+SET pg_parquetio.allowed_paths = '/data/files,/tmp';</code></pre>
 
 <h3>Examples</h3>
 
@@ -718,16 +718,16 @@ ORDER  BY 2 DESC;</code></pre>
 
 <div class="note">
   <strong>Note</strong>
-  For complex nested or repeated Parquet schemas, use <code>libarrow</code> directly via the <code>alohadb_cdc_arrow</code> extension. <code>read_parquet</code> supports flat schemas only.
+  For complex nested or repeated Parquet schemas, use <code>libarrow</code> directly via the <code>pg_cdc_arrow</code> extension. <code>read_parquet</code> supports flat schemas only.
 </div>
 
 <!-- ================================================================ -->
-<h2 id="ext-vector">alohadb_vector <span class="badge">v1.0</span></h2>
+<h2 id="ext-vector">pg_vector <span class="badge">v1.0</span></h2>
 
 <p>Dense vector type and IVFFlat approximate nearest-neighbor (ANN) search. Uses Lloyd's k-means (1957/1982) and inverted-file indexing — both prior-art algorithms with no active patent encumbrances. HNSW (US10380099) is intentionally not implemented.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_vector;</code></pre>
+<pre><code>CREATE EXTENSION pg_vector;</code></pre>
 
 <h3>Type</h3>
 <p>The <code>vector</code> type stores a fixed-length array of single-precision floats. Text format: <code>[f1,f2,...,fn]</code>.</p>
@@ -789,12 +789,12 @@ ORDER  BY r.distance;</code></pre>
 </div>
 
 <!-- ================================================================ -->
-<h2 id="ext-geo">alohadb_geo <span class="badge">v1.0</span></h2>
+<h2 id="ext-geo">pg_geo <span class="badge">v1.0</span></h2>
 
 <p>2D geometry types and spatial operations. All algorithms are decades-old prior art: ray-casting point-in-polygon (Franklin 1970), AABB intersection (Roberts 1963), shoelace area formula (Gauss 1795), Haversine distance.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_geo;</code></pre>
+<pre><code>CREATE EXTENSION pg_geo;</code></pre>
 
 <h3>Types</h3>
 <table>
@@ -865,12 +865,12 @@ WHERE  ST_BoundingBox(
 );</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-ontology">alohadb_ontology <span class="badge">v1.0</span></h2>
+<h2 id="ext-ontology">pg_ontology <span class="badge">v1.0</span></h2>
 
 <p>W3C-compatible RDF-style triple store (Subject-Predicate-Object) with type hierarchy and graph traversal. Implements a context graph for knowledge representation without proprietary algorithms.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_ontology;</code></pre>
+<pre><code>CREATE EXTENSION pg_ontology;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -911,14 +911,14 @@ ORDER  BY depth, related_entity;
 SELECT ontology_subclass('Company', 'Organization') AS is_subtype;</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-context">alohadb_context <span class="badge">v1.0</span></h2>
+<h2 id="ext-context">pg_context <span class="badge">v1.0</span></h2>
 
 <p>Entity disambiguation for context-aware search. Maps ambiguous terms (e.g., "Apple") to canonical entities based on domain context, using a pure lookup-table approach with no patented NLP algorithms.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_context;
+<pre><code>CREATE EXTENSION pg_context;
 -- Optionally extend the ontology graph:
--- CREATE EXTENSION alohadb_ontology;</code></pre>
+-- CREATE EXTENSION pg_ontology;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -956,12 +956,12 @@ WHERE  to_tsvector(body) @@ q
 ORDER  BY rank DESC;</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-intent">alohadb_intent <span class="badge">v1.0</span></h2>
+<h2 id="ext-intent">pg_intent <span class="badge">v1.0</span></h2>
 
 <p>Document intent classification using keyword-frequency scoring and a hierarchical intent registry. No machine learning model is required; classification is performed with a pure SQL keyword-hit-ratio algorithm.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_intent;</code></pre>
+<pre><code>CREATE EXTENSION pg_intent;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -996,7 +996,7 @@ SELECT intent_auto_tag(42, 'My order arrived damaged, I need a refund');
 SELECT intent_name FROM intent_of(42);</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-python">alohadb_python <span class="badge">v1.0</span></h2>
+<h2 id="ext-python">pg_python <span class="badge">v1.0</span></h2>
 
 <p>Execute Python code directly inside PostgreSQL using the built-in <code>plpython3u</code> procedural language. Supports inline evaluation, versioned script management, argument passing via JSON, and execution history.</p>
 
@@ -1006,7 +1006,7 @@ SELECT intent_name FROM intent_of(42);</code></pre>
 SELECT lanname FROM pg_language WHERE lanname = 'plpython3u';</code></pre>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_python;</code></pre>
+<pre><code>CREATE EXTENSION pg_python;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1054,12 +1054,12 @@ SELECT python_exec('calc_discount', '{"price": 250.00, "rate": 0.15}');
 </div>
 
 <!-- ================================================================ -->
-<h2 id="ext-unified">alohadb_unified <span class="badge">v1.0</span></h2>
+<h2 id="ext-unified">pg_unified <span class="badge">v1.0</span></h2>
 
 <p>Unified streaming and batch semantics. Streaming events land in an in-database buffer and are exposed through a dynamic <code>UNION ALL</code> view that combines the batch table with unflushed events. No Spark, Delta Lake, or Databricks-specific code.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_unified;</code></pre>
+<pre><code>CREATE EXTENSION pg_unified;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1102,16 +1102,16 @@ SELECT user_id, action, ts FROM events_all ORDER BY ts;
 SELECT unified_flush('event_stream');</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-pipeline">alohadb_pipeline <span class="badge">v1.0</span></h2>
+<h2 id="ext-pipeline">pg_pipeline <span class="badge">v1.0</span></h2>
 
 <p>DAG-based ETL pipeline orchestration. Tasks are defined with SQL commands and dependency relationships. A background worker applies Kahn's topological sort (1962) to dispatch ready tasks up to a configurable parallelism limit.</p>
 
 <h3>Prerequisite</h3>
 <pre><code>-- Add to postgresql.conf, then restart:
-shared_preload_libraries = 'alohadb_pipeline'</code></pre>
+shared_preload_libraries = 'pg_pipeline'</code></pre>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_pipeline;</code></pre>
+<pre><code>CREATE EXTENSION pg_pipeline;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1157,19 +1157,19 @@ SELECT pipeline_name, status, completed_tasks, total_tasks
 FROM   pipeline_status('daily_etl');</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-kafka">alohadb_kafka <span class="badge">v1.0</span></h2>
+<h2 id="ext-kafka">pg_kafka <span class="badge">v1.0</span></h2>
 
-<p>Inbound Kafka and AWS Kinesis consumer. A background worker polls configured consumers and writes received messages to <code>alohadb_kafka_messages</code>. Kafka transport uses librdkafka (Apache 2.0). Kinesis uses AWS HTTP API with SigV4 signing (HMAC-SHA256, RFC 2104).</p>
+<p>Inbound Kafka and AWS Kinesis consumer. A background worker polls configured consumers and writes received messages to <code>pg_kafka_messages</code>. Kafka transport uses librdkafka (Apache 2.0). Kinesis uses AWS HTTP API with SigV4 signing (HMAC-SHA256, RFC 2104).</p>
 
 <h3>Prerequisite</h3>
 <pre><code>-- Add to postgresql.conf, then restart:
-shared_preload_libraries = 'alohadb_kafka'
+shared_preload_libraries = 'pg_kafka'
 
 -- For Kafka (optional; Kinesis uses HTTP only):
 -- Install librdkafka >= 1.8</code></pre>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_kafka;</code></pre>
+<pre><code>CREATE EXTENSION pg_kafka;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1216,12 +1216,12 @@ SELECT kinesis_stream_create(
 );</code></pre>
 
 <!-- ================================================================ -->
-<h2 id="ext-objectstore">alohadb_objectstore <span class="badge">v1.0</span></h2>
+<h2 id="ext-objectstore">pg_objectstore <span class="badge">v1.0</span></h2>
 
 <p>Read and write S3, GCS, and Azure Blob storage directly from SQL. S3 uses SigV4 signing (HMAC-SHA256, RFC 2104, publicly documented AWS algorithm). GCS uses OAuth2 service-account JWT exchange (RFC 6749). Azure uses Shared Access Signature. No proprietary cloud SDK code.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_objectstore;</code></pre>
+<pre><code>CREATE EXTENSION pg_objectstore;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1286,16 +1286,16 @@ ORDER  BY key;</code></pre>
 
 <div class="warning">
   <strong>Warning</strong>
-  Credentials are stored in the <code>alohadb_objectstore_credentials</code> table. Protect this table with row-level security or restrict access to a dedicated role. Consider enabling the <code>alohadb_vault</code> extension for encrypted credential storage.
+  Credentials are stored in the <code>pg_objectstore_credentials</code> table. Protect this table with row-level security or restrict access to a dedicated role. Consider enabling the <code>pg_vault</code> extension for encrypted credential storage.
 </div>
 
 <!-- ================================================================ -->
-<h2 id="ext-model-registry">alohadb_model_registry <span class="badge">v1.0</span></h2>
+<h2 id="ext-model-registry">pg_model_registry <span class="badge">v1.0</span></h2>
 
-<p>ML model versioning, deployment lifecycle management, and experiment tracking. Integrates with <code>alohadb_inference</code> (when installed) to automatically load models on promotion to production.</p>
+<p>ML model versioning, deployment lifecycle management, and experiment tracking. Integrates with <code>pg_inference</code> (when installed) to automatically load models on promotion to production.</p>
 
 <h3>Install</h3>
-<pre><code>CREATE EXTENSION alohadb_model_registry;</code></pre>
+<pre><code>CREATE EXTENSION pg_model_registry;</code></pre>
 
 <h3>Key Functions</h3>
 <table>
@@ -1367,40 +1367,40 @@ END $$;</code></pre>
 <table>
   <thead><tr><th>Extension</th><th>Purpose</th></tr></thead>
   <tbody>
-    <tr><td><code>alohadb_analytics</code></td><td>Window functions, statistical aggregates, and analytical queries</td></tr>
-    <tr><td><code>alohadb_approx</code></td><td>Approximate aggregates: HyperLogLog, Count-Min Sketch, t-digest</td></tr>
-    <tr><td><code>alohadb_audit</code></td><td>Row-level audit logging with change capture</td></tr>
-    <tr><td><code>alohadb_branch</code></td><td>Logical database branching (copy-on-write snapshots)</td></tr>
-    <tr><td><code>alohadb_cache</code></td><td>Shared-memory result cache with TTL</td></tr>
-    <tr><td><code>alohadb_cdc_arrow</code></td><td>Change data capture with Apache Arrow IPC streaming</td></tr>
-    <tr><td><code>alohadb_chart</code></td><td>SVG chart generation from SQL result sets</td></tr>
-    <tr><td><code>alohadb_columnar</code></td><td>Column-oriented storage via custom access method</td></tr>
-    <tr><td><code>alohadb_cron</code></td><td>Background cron job scheduler with standard cron syntax</td></tr>
-    <tr><td><code>alohadb_distributed</code></td><td>Horizontal sharding and distributed query execution</td></tr>
-    <tr><td><code>alohadb_federated</code></td><td>Query external databases (MySQL, SQLite, REST APIs) via FDW</td></tr>
-    <tr><td><code>alohadb_gpu</code></td><td>GPU-accelerated aggregates via CUDA/ROCm</td></tr>
-    <tr><td><code>alohadb_graphql</code></td><td>Auto-generate a GraphQL API from table schemas</td></tr>
-    <tr><td><code>alohadb_http</code></td><td>Make outbound HTTP/HTTPS requests from SQL</td></tr>
-    <tr><td><code>alohadb_inference</code></td><td>Run ONNX models in-database via onnxruntime</td></tr>
-    <tr><td><code>alohadb_jsonschema</code></td><td>JSON Schema validation as a CHECK constraint</td></tr>
-    <tr><td><code>alohadb_learned_stats</code></td><td>Learned cardinality estimator for query planning</td></tr>
-    <tr><td><code>alohadb_nl2sql</code></td><td>Natural-language to SQL translation using LLM integration</td></tr>
-    <tr><td><code>alohadb_nosql</code></td><td>Document-store API over PostgreSQL JSONB tables</td></tr>
-    <tr><td><code>alohadb_pool</code></td><td>Built-in connection pooler (PgBouncer-compatible)</td></tr>
-    <tr><td><code>alohadb_query_store</code></td><td>Query performance history and plan capture</td></tr>
-    <tr><td><code>alohadb_queue</code></td><td>Durable transactional job queue</td></tr>
-    <tr><td><code>alohadb_ratelimit</code></td><td>Per-role rate limiting on query throughput</td></tr>
-    <tr><td><code>alohadb_realtime</code></td><td>WebSocket-based live query subscriptions</td></tr>
-    <tr><td><code>alohadb_remote_config</code></td><td>Dynamic configuration management via SQL tables</td></tr>
-    <tr><td><code>alohadb_restapi</code></td><td>Auto-generated REST API over tables (PostgREST-compatible)</td></tr>
-    <tr><td><code>alohadb_scale</code></td><td>Read replica management and automatic query routing</td></tr>
-    <tr><td><code>alohadb_schema_change</code></td><td>Online schema migrations with zero downtime</td></tr>
-    <tr><td><code>alohadb_search</code></td><td>Full-text search with BM25 ranking and multi-language support</td></tr>
-    <tr><td><code>alohadb_temporal</code></td><td>Bitemporal tables (valid time + transaction time)</td></tr>
-    <tr><td><code>alohadb_timeseries</code></td><td>Time-series compression, downsampling, and gap filling</td></tr>
-    <tr><td><code>alohadb_tiering</code></td><td>Automatic data tiering (hot/warm/cold) based on access frequency</td></tr>
-    <tr><td><code>alohadb_vault</code></td><td>Encrypted secrets storage integrated with extension credentials</td></tr>
-    <tr><td><code>alohadb_vectorize</code></td><td>Automatic embedding generation using pluggable model providers</td></tr>
+    <tr><td><code>pg_contagg</code></td><td>Window functions, statistical aggregates, and analytical queries</td></tr>
+    <tr><td><code>pg_approx</code></td><td>Approximate aggregates: HyperLogLog, Count-Min Sketch, t-digest</td></tr>
+    <tr><td><code>pg_audit</code></td><td>Row-level audit logging with change capture</td></tr>
+    <tr><td><code>pg_branch</code></td><td>Logical database branching (copy-on-write snapshots)</td></tr>
+    <tr><td><code>pg_cache</code></td><td>Shared-memory result cache with TTL</td></tr>
+    <tr><td><code>pg_cdc_arrow</code></td><td>Change data capture with Apache Arrow IPC streaming</td></tr>
+    <tr><td><code>pg_chart</code></td><td>SVG chart generation from SQL result sets</td></tr>
+    <tr><td><code>pg_columnar</code></td><td>Column-oriented storage via custom access method</td></tr>
+    <tr><td><code>pg_cronjobs</code></td><td>Background cron job scheduler with standard cron syntax</td></tr>
+    <tr><td><code>pg_distributed</code></td><td>Horizontal sharding and distributed query execution</td></tr>
+    <tr><td><code>pg_federated</code></td><td>Query external databases (MySQL, SQLite, REST APIs) via FDW</td></tr>
+    <tr><td><code>pg_gpu</code></td><td>GPU-accelerated aggregates via CUDA/ROCm</td></tr>
+    <tr><td><code>pg_gql</code></td><td>Auto-generate a GraphQL API from table schemas</td></tr>
+    <tr><td><code>pg_http</code></td><td>Make outbound HTTP/HTTPS requests from SQL</td></tr>
+    <tr><td><code>pg_inference</code></td><td>Run ONNX models in-database via onnxruntime</td></tr>
+    <tr><td><code>pg_json_schema</code></td><td>JSON Schema validation as a CHECK constraint</td></tr>
+    <tr><td><code>pg_learned_stats</code></td><td>Learned cardinality estimator for query planning</td></tr>
+    <tr><td><code>pg_nl2sql</code></td><td>Natural-language to SQL translation using LLM integration</td></tr>
+    <tr><td><code>pg_nosql</code></td><td>Document-store API over PostgreSQL JSONB tables</td></tr>
+    <tr><td><code>pg_pool</code></td><td>Built-in connection pooler (PgBouncer-compatible)</td></tr>
+    <tr><td><code>pg_query_store</code></td><td>Query performance history and plan capture</td></tr>
+    <tr><td><code>pg_queue</code></td><td>Durable transactional job queue</td></tr>
+    <tr><td><code>pg_ratelimit</code></td><td>Per-role rate limiting on query throughput</td></tr>
+    <tr><td><code>pg_realtime</code></td><td>WebSocket-based live query subscriptions</td></tr>
+    <tr><td><code>pg_remote_config</code></td><td>Dynamic configuration management via SQL tables</td></tr>
+    <tr><td><code>pg_restapi</code></td><td>Auto-generated REST API over tables (PostgREST-compatible)</td></tr>
+    <tr><td><code>pg_scale</code></td><td>Read replica management and automatic query routing</td></tr>
+    <tr><td><code>pg_schema_change</code></td><td>Online schema migrations with zero downtime</td></tr>
+    <tr><td><code>pg_ftsearch</code></td><td>Full-text search with BM25 ranking and multi-language support</td></tr>
+    <tr><td><code>pg_temporal</code></td><td>Bitemporal tables (valid time + transaction time)</td></tr>
+    <tr><td><code>pg_tsmanage</code></td><td>Time-series compression, downsampling, and gap filling</td></tr>
+    <tr><td><code>pg_tiering</code></td><td>Automatic data tiering (hot/warm/cold) based on access frequency</td></tr>
+    <tr><td><code>pg_vault</code></td><td>Encrypted secrets storage integrated with extension credentials</td></tr>
+    <tr><td><code>pg_vecexec</code></td><td>Automatic embedding generation using pluggable model providers</td></tr>
   </tbody>
 </table>
 
@@ -1417,7 +1417,7 @@ END $$;</code></pre>
     <tr><td><code>row::jsonb</code>, <code>to_jsonb(v)</code></td><td>Convert row or value to jsonb</td></tr>
     <tr><td><code>jsonb-&gt;&gt;'key'</code></td><td>Extract text value by key</td></tr>
     <tr><td><code>jsonb-&gt;'key'</code></td><td>Extract jsonb value by key</td></tr>
-    <tr><td><code>jsonb_populate_record(null::T, jsonb)</code></td><td>Cast jsonb to a typed record (used by alohadb_unified)</td></tr>
+    <tr><td><code>jsonb_populate_record(null::T, jsonb)</code></td><td>Cast jsonb to a typed record (used by pg_unified)</td></tr>
     <tr><td><code>jsonb_object_keys(jsonb)</code></td><td>Return all top-level keys</td></tr>
     <tr><td><code>jsonb_agg(expr)</code></td><td>Aggregate rows into a JSON array</td></tr>
     <tr><td><code>jsonb_build_object(k,v,...)</code></td><td>Construct a jsonb object from key-value pairs</td></tr>
@@ -1448,7 +1448,7 @@ FROM   orders
 WINDOW w AS (PARTITION BY user_id ORDER BY ts);</code></pre>
 
 <h3>CTEs and Recursive Queries</h3>
-<pre><code>-- Recursive hierarchy traversal (used internally by alohadb_ontology)
+<pre><code>-- Recursive hierarchy traversal (used internally by pg_ontology)
 WITH RECURSIVE hierarchy AS (
     SELECT id, name, parent_id, 0 AS depth
     FROM   categories WHERE parent_id IS NULL
@@ -1504,15 +1504,15 @@ WHERE  state = 'idle'
 <table>
   <thead><tr><th>Parameter</th><th>Default</th><th>Context</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>alohadb.cron_check_interval</code></td><td>60</td><td>SIGHUP</td><td>Seconds between cron job scans</td></tr>
-    <tr><td><code>alohadb.cron_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the cron worker connects to</td></tr>
-    <tr><td><code>alohadb.pipeline_check_interval</code></td><td>5</td><td>SIGHUP</td><td>Seconds between pipeline task polls</td></tr>
-    <tr><td><code>alohadb.pipeline_max_parallel</code></td><td>4</td><td>SIGHUP</td><td>Maximum concurrent pipeline tasks</td></tr>
-    <tr><td><code>alohadb.pipeline_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the pipeline worker connects to</td></tr>
-    <tr><td><code>alohadb.kafka_poll_interval_ms</code></td><td>1000</td><td>SIGHUP</td><td>Milliseconds between Kafka consumer polls</td></tr>
-    <tr><td><code>alohadb.kafka_database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the Kafka worker connects to</td></tr>
-    <tr><td><code>alohadb.parquet_allowed_paths</code></td><td>(empty)</td><td>SIGHUP</td><td>Comma-separated list of directories allowed for file reads</td></tr>
-    <tr><td><code>alohadb.python_executable</code></td><td>python3</td><td>SIGHUP</td><td>Python interpreter path (informational; plpython3u uses the compiled-in path)</td></tr>
+    <tr><td><code>pg_cronjobs.check_interval</code></td><td>60</td><td>SIGHUP</td><td>Seconds between cron job scans</td></tr>
+    <tr><td><code>pg_cronjobs.database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the cron worker connects to</td></tr>
+    <tr><td><code>pg_pipeline.check_interval</code></td><td>5</td><td>SIGHUP</td><td>Seconds between pipeline task polls</td></tr>
+    <tr><td><code>pg_pipeline.max_parallel</code></td><td>4</td><td>SIGHUP</td><td>Maximum concurrent pipeline tasks</td></tr>
+    <tr><td><code>pg_pipeline.database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the pipeline worker connects to</td></tr>
+    <tr><td><code>pg_kafka.poll_interval_ms</code></td><td>1000</td><td>SIGHUP</td><td>Milliseconds between Kafka consumer polls</td></tr>
+    <tr><td><code>pg_kafka.database</code></td><td>postgres</td><td>SIGHUP</td><td>Database the Kafka worker connects to</td></tr>
+    <tr><td><code>pg_parquetio.allowed_paths</code></td><td>(empty)</td><td>SIGHUP</td><td>Comma-separated list of directories allowed for file reads</td></tr>
+    <tr><td><code>pg_python.executable</code></td><td>python3</td><td>SIGHUP</td><td>Python interpreter path (informational; plpython3u uses the compiled-in path)</td></tr>
   </tbody>
 </table>
 
@@ -1533,20 +1533,20 @@ cd alohadb-20.0/build
 meson test --suite regress
 
 ## Run tests for a specific extension
-meson test --suite regress alohadb_vector
-meson test --suite regress alohadb_geo
+meson test --suite regress pg_vector
+meson test --suite regress pg_geo
 
 ## Run with verbose output
-meson test -v --suite regress alohadb_pipeline
+meson test -v --suite regress pg_pipeline
 
 ## Run a single test file manually
-pg_regress --inputdir=../contrib/alohadb_vector \
-           --expecteddir=../contrib/alohadb_vector/expected \
+pg_regress --inputdir=../contrib/pg_vector \
+           --expecteddir=../contrib/pg_vector/expected \
            vector</code></pre>
 
 <h4>Running Tests (make / pgxs)</h4>
 
-<pre><code>cd contrib/alohadb_vector
+<pre><code>cd contrib/pg_vector
 make installcheck PGPORT=5432 PGUSER=postgres</code></pre>
 
 <h4>Test File Locations</h4>
@@ -1554,18 +1554,18 @@ make installcheck PGPORT=5432 PGUSER=postgres</code></pre>
 <table>
   <thead><tr><th>Extension</th><th>Test File</th></tr></thead>
   <tbody>
-    <tr><td>alohadb_vector</td><td><code>contrib/alohadb_vector/sql/vector.sql</code></td></tr>
-    <tr><td>alohadb_geo</td><td><code>contrib/alohadb_geo/sql/geo.sql</code></td></tr>
-    <tr><td>alohadb_pipeline</td><td><code>contrib/alohadb_pipeline/sql/pipeline.sql</code></td></tr>
-    <tr><td>alohadb_kafka</td><td><code>contrib/alohadb_kafka/sql/kafka.sql</code></td></tr>
-    <tr><td>alohadb_objectstore</td><td><code>contrib/alohadb_objectstore/sql/objectstore.sql</code></td></tr>
-    <tr><td>alohadb_model_registry</td><td><code>contrib/alohadb_model_registry/sql/model_registry.sql</code></td></tr>
-    <tr><td>alohadb_ontology</td><td><code>contrib/alohadb_ontology/sql/ontology.sql</code></td></tr>
-    <tr><td>alohadb_context</td><td><code>contrib/alohadb_context/sql/context.sql</code></td></tr>
-    <tr><td>alohadb_intent</td><td><code>contrib/alohadb_intent/sql/intent.sql</code></td></tr>
-    <tr><td>alohadb_python</td><td><code>contrib/alohadb_python/sql/python.sql</code></td></tr>
-    <tr><td>alohadb_unified</td><td><code>contrib/alohadb_unified/sql/unified.sql</code></td></tr>
-    <tr><td>alohadb_parquet</td><td><code>contrib/alohadb_parquet/sql/parquet_v11.sql</code></td></tr>
+    <tr><td>pg_vector</td><td><code>contrib/pg_vector/sql/vector.sql</code></td></tr>
+    <tr><td>pg_geo</td><td><code>contrib/pg_geo/sql/geo.sql</code></td></tr>
+    <tr><td>pg_pipeline</td><td><code>contrib/pg_pipeline/sql/pipeline.sql</code></td></tr>
+    <tr><td>pg_kafka</td><td><code>contrib/pg_kafka/sql/kafka.sql</code></td></tr>
+    <tr><td>pg_objectstore</td><td><code>contrib/pg_objectstore/sql/objectstore.sql</code></td></tr>
+    <tr><td>pg_model_registry</td><td><code>contrib/pg_model_registry/sql/model_registry.sql</code></td></tr>
+    <tr><td>pg_ontology</td><td><code>contrib/pg_ontology/sql/ontology.sql</code></td></tr>
+    <tr><td>pg_context</td><td><code>contrib/pg_context/sql/context.sql</code></td></tr>
+    <tr><td>pg_intent</td><td><code>contrib/pg_intent/sql/intent.sql</code></td></tr>
+    <tr><td>pg_python</td><td><code>contrib/pg_python/sql/python.sql</code></td></tr>
+    <tr><td>pg_unified</td><td><code>contrib/pg_unified/sql/unified.sql</code></td></tr>
+    <tr><td>pg_parquetio</td><td><code>contrib/pg_parquetio/sql/parquet_v11.sql</code></td></tr>
   </tbody>
 </table>
 
@@ -1594,9 +1594,9 @@ psql -U postgres -f test/integration/kafka_live.sql</code></pre>
 psql -U postgres -d mydb
 
 -- Create extensions
-CREATE EXTENSION IF NOT EXISTS alohadb_vector;
-CREATE EXTENSION IF NOT EXISTS alohadb_geo;
-CREATE EXTENSION IF NOT EXISTS alohadb_parquet;
+CREATE EXTENSION IF NOT EXISTS pg_vector;
+CREATE EXTENSION IF NOT EXISTS pg_geo;
+CREATE EXTENSION IF NOT EXISTS pg_parquetio;
 
 -- Vector test
 SELECT '[1,0,0]'::vector <-> '[0,1,0]'::vector AS l2_dist;
@@ -1638,7 +1638,7 @@ FROM   vector_index_search('bench_idx', '[0.1,0.2,...]'::vector, 10);
 
 <h3>Extension Does Not Load</h3>
 
-<p><strong>Symptom:</strong> <code>ERROR: could not open extension control file ".../alohadb_vector.control": No such file or directory</code></p>
+<p><strong>Symptom:</strong> <code>ERROR: could not open extension control file ".../pg_vector.control": No such file or directory</code></p>
 
 <p><strong>Cause:</strong> The extension files were not installed to the PostgreSQL data directory.</p>
 
@@ -1652,12 +1652,12 @@ cd alohadb-20.0/build
 sudo ninja install
 
 ## On Windows: re-run the installer or manually copy
-## C:\Program Files\AlohaDB\20\share\extension\alohadb_vector.*
+## C:\Program Files\AlohaDB\20\share\extension\pg_vector.*
 ## to the PostgreSQL share\extension directory</code></pre>
 
 <h3>Shared Library Not Found</h3>
 
-<p><strong>Symptom:</strong> <code>ERROR: could not load library ".../alohadb_vector.so": libm.so.6: cannot open shared object file</code></p>
+<p><strong>Symptom:</strong> <code>ERROR: could not load library ".../pg_vector.so": libm.so.6: cannot open shared object file</code></p>
 
 <p><strong>Fix:</strong></p>
 <pre><code>## Linux: update library cache
@@ -1680,7 +1680,7 @@ set PATH=C:\Program Files\AlohaDB\20\lib;%PATH%</code></pre>
 grep shared_preload_libraries "$PGDATA/postgresql.conf"
 
 ## Should include the extension, e.g.:
-## shared_preload_libraries = 'alohadb_pipeline,alohadb_kafka,alohadb_cron'
+## shared_preload_libraries = 'pg_pipeline,pg_kafka,pg_cronjobs'
 
 ## After editing, restart the server (SIGHUP is NOT sufficient for this setting)
 ## Linux:
@@ -1720,7 +1720,7 @@ find /usr -name "libpython3*.so*" 2>/dev/null</code></pre>
 python --version
 where python3.dll</code></pre>
 
-<h3>alohadb_vector: Index Not Trained</h3>
+<h3>pg_vector: Index Not Trained</h3>
 
 <p><strong>Symptom:</strong> <code>ERROR: vector_index_insert: index "my_idx" not found or not trained</code></p>
 
@@ -1735,19 +1735,19 @@ SELECT vector_index_rebuild('my_idx');
 -- If the source table is empty, populate it first:
 SELECT count(*) FROM my_source_table WHERE my_vector_col IS NOT NULL;</code></pre>
 
-<h3>alohadb_parquet: Path Not Allowed</h3>
+<h3>pg_parquetio: Path Not Allowed</h3>
 
 <p><strong>Symptom:</strong> <code>ERROR: file path "/data/file.parquet" is not in an allowed directory</code></p>
 
 <p><strong>Fix:</strong></p>
 <pre><code>-- Set the allowed paths (can be done per-session or in postgresql.conf)
-SET alohadb.parquet_allowed_paths = '/data,/tmp';
+SET pg_parquetio.allowed_paths = '/data,/tmp';
 
 -- Or as superuser for all sessions:
-ALTER SYSTEM SET alohadb.parquet_allowed_paths = '/data,/tmp';
+ALTER SYSTEM SET pg_parquetio.allowed_paths = '/data,/tmp';
 SELECT pg_reload_conf();</code></pre>
 
-<h3>alohadb_objectstore: Authentication Failure</h3>
+<h3>pg_objectstore: Authentication Failure</h3>
 
 <p><strong>Symptom:</strong> <code>WARNING: objectstore_s3: HTTP 403 for s3://bucket/key</code>, <code>objectstore_get returns NULL</code></p>
 
@@ -1821,11 +1821,11 @@ SELECT consumer_name, status, last_polled_at
 FROM   kafka_consumer_status();
 
 -- Check PostgreSQL log for rdkafka errors
--- Linux: sudo journalctl -u alohadb | grep alohadb_kafka
+-- Linux: sudo journalctl -u alohadb | grep pg_kafka
 
 -- Test broker connectivity from the server
 -- (replace with your broker address)
-psql -c "SELECT alohadb_http_get('http://broker:9092')"
+psql -c "SELECT pg_http_get('http://broker:9092')"
 -- or simply:
 -- nc -zv broker 9092
 
@@ -1866,22 +1866,22 @@ ORDER  BY extname;</code></pre>
 
 <p><strong>New Extensions:</strong></p>
 <ul>
-  <li><strong>alohadb_vector 1.0</strong> &mdash; Dense vector type and IVFFlat ANN index (Lloyd's k-means, no HNSW patents)</li>
-  <li><strong>alohadb_geo 1.0</strong> &mdash; 2D geometry types: geo_point, geo_bbox, geo_polygon, geo_circle; ST_ spatial functions</li>
-  <li><strong>alohadb_ontology 1.0</strong> &mdash; RDF triple store and hierarchical type system</li>
-  <li><strong>alohadb_context 1.0</strong> &mdash; Entity disambiguation with domain-aware context profiles</li>
-  <li><strong>alohadb_intent 1.0</strong> &mdash; Document intent classification with keyword scoring and hierarchy</li>
-  <li><strong>alohadb_python 1.0</strong> &mdash; In-database Python execution with versioned script management</li>
-  <li><strong>alohadb_unified 1.0</strong> &mdash; Unified streaming and batch semantics via UNION ALL views</li>
-  <li><strong>alohadb_pipeline 1.0</strong> &mdash; DAG-based ETL pipeline orchestration with background worker</li>
-  <li><strong>alohadb_kafka 1.0</strong> &mdash; Kafka and Kinesis consumer with optional librdkafka support</li>
-  <li><strong>alohadb_objectstore 1.0</strong> &mdash; S3, GCS, Azure Blob storage via SigV4 and OAuth2</li>
-  <li><strong>alohadb_model_registry 1.0</strong> &mdash; ML model versioning, deployment lifecycle, and experiment tracking</li>
+  <li><strong>pg_vector 1.0</strong> &mdash; Dense vector type and IVFFlat ANN index (Lloyd's k-means, no HNSW patents)</li>
+  <li><strong>pg_geo 1.0</strong> &mdash; 2D geometry types: geo_point, geo_bbox, geo_polygon, geo_circle; ST_ spatial functions</li>
+  <li><strong>pg_ontology 1.0</strong> &mdash; RDF triple store and hierarchical type system</li>
+  <li><strong>pg_context 1.0</strong> &mdash; Entity disambiguation with domain-aware context profiles</li>
+  <li><strong>pg_intent 1.0</strong> &mdash; Document intent classification with keyword scoring and hierarchy</li>
+  <li><strong>pg_python 1.0</strong> &mdash; In-database Python execution with versioned script management</li>
+  <li><strong>pg_unified 1.0</strong> &mdash; Unified streaming and batch semantics via UNION ALL views</li>
+  <li><strong>pg_pipeline 1.0</strong> &mdash; DAG-based ETL pipeline orchestration with background worker</li>
+  <li><strong>pg_kafka 1.0</strong> &mdash; Kafka and Kinesis consumer with optional librdkafka support</li>
+  <li><strong>pg_objectstore 1.0</strong> &mdash; S3, GCS, Azure Blob storage via SigV4 and OAuth2</li>
+  <li><strong>pg_model_registry 1.0</strong> &mdash; ML model versioning, deployment lifecycle, and experiment tracking</li>
 </ul>
 
 <p><strong>Updated Extensions:</strong></p>
 <ul>
-  <li><strong>alohadb_parquet 1.1</strong> &mdash; Full Parquet column reader: PLAIN/DICTIONARY encoding, SNAPPY decompression, SETOF jsonb output</li>
+  <li><strong>pg_parquetio 1.1</strong> &mdash; Full Parquet column reader: PLAIN/DICTIONARY encoding, SNAPPY decompression, SETOF jsonb output</li>
 </ul>
 
 <p><strong>Base:</strong> PostgreSQL 18.0</p>

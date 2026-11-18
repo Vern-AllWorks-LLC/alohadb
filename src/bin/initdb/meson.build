@@ -9,11 +9,11 @@ initdb_sources += timezone_localtime_source
 
 if host_system == 'windows'
   initdb_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'alinitdb',
-    '--FILEDESC', 'alinitdb - initialize a new database cluster',])
+    '--NAME', 'initdb',
+    '--FILEDESC', 'initdb - initialize a new database cluster',])
 endif
 
-initdb = executable('alinitdb',
+initdb = executable('initdb',
   initdb_sources,
   include_directories: [timezone_inc],
   # Note: it's important that we link to encnames.o from libpgcommon, not

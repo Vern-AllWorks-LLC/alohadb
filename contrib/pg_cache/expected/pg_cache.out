@@ -1,0 +1,492 @@
+CREATE EXTENSION pg_cache;
+-- basic set / get
+SELECT cache_set('j1', '{"a": 1, "b": [1, 2]}');
+ cache_set 
+-----------
+ 
+(1 row)
+
+SELECT cache_get('j1');
+       cache_get       
+-----------------------
+ {"a": 1, "b": [1, 2]}
+(1 row)
+
+SELECT cache_get_text('j1');
+    cache_get_text     
+-----------------------
+ {"a": 1, "b": [1, 2]}
+(1 row)
+
+SELECT cache_set_text('t1', 'hello');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_get_text('t1');
+ cache_get_text 
+----------------
+ hello
+(1 row)
+
+SELECT cache_get('missing') IS NULL AS missing;
+ missing 
+---------
+ t
+(1 row)
+
+SELECT cache_delete('t1'), cache_delete('t1');
+ cache_delete | cache_delete 
+--------------+--------------
+ t            | f
+(1 row)
+
+SELECT cache_get_text('t1') IS NULL AS deleted;
+ deleted 
+---------
+ t
+(1 row)
+
+-- errors
+SELECT cache_set_text('', 'x');
+ERROR:  pg_cache key must not be empty
+SELECT cache_set_text(repeat('k', 256), 'x');
+ERROR:  pg_cache key too long (256 bytes, maximum is 255)
+SELECT cache_set_text('k', NULL);
+ERROR:  pg_cache key and value must not be NULL
+SELECT cache_set_text('k', 'x', '-1 second');
+ERROR:  pg_cache TTL must be a positive, finite interval
+SELECT cache_set_text('big', repeat('x', 300000));
+ERROR:  pg_cache value too large (300000 bytes, maximum is 262144)
+SELECT cache_get('notjson') IS NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT cache_set_text('notjson', 'not json');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_get('notjson');
+ERROR:  invalid input syntax for type json
+DETAIL:  Token "not" is invalid.
+CONTEXT:  JSON data, line 1: not...
+-- transactional writes: applied at commit, discarded on abort
+BEGIN;
+SELECT cache_set_text('tx', 'v1');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_get_text('tx') AS own_write_visible;
+ own_write_visible 
+-------------------
+ v1
+(1 row)
+
+ROLLBACK;
+SELECT cache_get_text('tx') IS NULL AS rolled_back;
+ rolled_back 
+-------------
+ t
+(1 row)
+
+BEGIN;
+SELECT cache_set_text('tx', 'v2');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+COMMIT;
+SELECT cache_get_text('tx') AS committed;
+ committed 
+-----------
+ v2
+(1 row)
+
+-- a failing statement discards its cache writes too
+SELECT cache_set_text('tx', 'v3'), 1/0;
+ERROR:  division by zero
+SELECT cache_get_text('tx') AS still_v2;
+ still_v2 
+----------
+ v2
+(1 row)
+
+-- delete and flush are transactional as well
+BEGIN;
+SELECT cache_delete('tx');
+ cache_delete 
+--------------
+ t
+(1 row)
+
+SELECT cache_get_text('tx') IS NULL AS deleted_in_txn;
+ deleted_in_txn 
+----------------
+ t
+(1 row)
+
+ROLLBACK;
+SELECT cache_get_text('tx') AS survived;
+ survived 
+----------
+ v2
+(1 row)
+
+BEGIN;
+SELECT cache_flush() > 0 AS flushed;
+ flushed 
+---------
+ t
+(1 row)
+
+SELECT cache_get_text('tx') IS NULL AS flushed_in_txn;
+ flushed_in_txn 
+----------------
+ t
+(1 row)
+
+SELECT cache_set_text('after_flush', 'x');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_get_text('after_flush');
+ cache_get_text 
+----------------
+ x
+(1 row)
+
+ROLLBACK;
+SELECT cache_get_text('tx') AS survived_flush, cache_get_text('after_flush') IS NULL AS no_after_flush;
+ survived_flush | no_after_flush 
+----------------+----------------
+ v2             | t
+(1 row)
+
+-- subtransactions
+BEGIN;
+SELECT cache_set_text('s1', 'outer');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SAVEPOINT a;
+SELECT cache_set_text('s1', 'inner');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_set_text('s2', 'inner');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+ROLLBACK TO SAVEPOINT a;
+SELECT cache_get_text('s1') AS s1_outer, cache_get_text('s2') IS NULL AS s2_gone;
+ s1_outer | s2_gone 
+----------+---------
+ outer    | t
+(1 row)
+
+SAVEPOINT b;
+SELECT cache_set_text('s3', 'kept');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+RELEASE SAVEPOINT b;
+COMMIT;
+SELECT cache_get_text('s1'), cache_get_text('s2'), cache_get_text('s3');
+ cache_get_text | cache_get_text | cache_get_text 
+----------------+----------------+----------------
+ outer          |                | kept
+(1 row)
+
+-- cache update tied to a table update in one transaction
+CREATE TABLE users (id int PRIMARY KEY, name text);
+INSERT INTO users VALUES (42, 'alice');
+SELECT cache_set('user:42', to_jsonb(u)) FROM users u WHERE id = 42;
+ cache_set 
+-----------
+ 
+(1 row)
+
+BEGIN;
+UPDATE users SET name = 'bob' WHERE id = 42;
+SELECT cache_set('user:42', to_jsonb(u)) FROM users u WHERE id = 42;
+ cache_set 
+-----------
+ 
+(1 row)
+
+ROLLBACK;
+SELECT u.name AS table_name, cache_get('user:42')->>'name' AS cached_name FROM users u WHERE id = 42;
+ table_name | cached_name 
+------------+-------------
+ alice      | alice
+(1 row)
+
+-- PREPARE TRANSACTION refuses pending cache writes
+BEGIN;
+SELECT cache_set_text('p', 'x');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+PREPARE TRANSACTION 'p1';
+ERROR:  cannot PREPARE a transaction that has pending pg_cache writes
+SELECT cache_get_text('p') IS NULL AS not_applied;
+ not_applied 
+-------------
+ t
+(1 row)
+
+-- non-transactional mode applies immediately
+SET pg_cache.transactional = off;
+BEGIN;
+SELECT cache_set_text('nt', 'now');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+ROLLBACK;
+SELECT cache_get_text('nt') AS immediate;
+ immediate 
+-----------
+ now
+(1 row)
+
+RESET pg_cache.transactional;
+-- TTL
+SELECT cache_set_text('ttl', 'x', '1 hour');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_ttl('ttl') BETWEEN '59 minutes' AND '1 hour' AS ttl_ok;
+ ttl_ok 
+--------
+ t
+(1 row)
+
+SELECT cache_ttl('t-none') IS NULL AS ttl_missing;
+ ttl_missing 
+-------------
+ t
+(1 row)
+
+SELECT cache_set_text('t-inf', 'x');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_ttl('t-inf');
+ cache_ttl 
+-----------
+ infinity
+(1 row)
+
+SELECT cache_expire('t-inf', '10 minutes');
+ cache_expire 
+--------------
+ t
+(1 row)
+
+SELECT cache_ttl('t-inf') <= '10 minutes' AS expire_applied;
+ expire_applied 
+----------------
+ t
+(1 row)
+
+SELECT cache_expire('t-inf', NULL);
+ cache_expire 
+--------------
+ t
+(1 row)
+
+SELECT cache_ttl('t-inf');
+ cache_ttl 
+-----------
+ infinity
+(1 row)
+
+SELECT cache_expire('nope', '1 minute');
+ cache_expire 
+--------------
+ f
+(1 row)
+
+SELECT cache_set_text('short', 'x', '50 milliseconds');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT pg_sleep(0.2);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT cache_get_text('short') IS NULL AS expired;
+ expired 
+---------
+ t
+(1 row)
+
+SELECT cache_purge_expired() >= 0 AS purged;
+ purged 
+--------
+ t
+(1 row)
+
+-- add (set if absent) and incr are immediate and atomic
+SELECT cache_add('lock:1', 'me'), cache_add('lock:1', 'you');
+ cache_add | cache_add 
+-----------+-----------
+ t         | f
+(1 row)
+
+BEGIN;
+SELECT cache_add('lock:2', 'x');
+ cache_add 
+-----------
+ t
+(1 row)
+
+ROLLBACK;
+SELECT cache_get_text('lock:2') AS add_not_rolled_back;
+ add_not_rolled_back 
+---------------------
+ x
+(1 row)
+
+SELECT cache_incr('ctr'), cache_incr('ctr'), cache_incr('ctr', 10), cache_incr('ctr', -2);
+ cache_incr | cache_incr | cache_incr | cache_incr 
+------------+------------+------------+------------
+          1 |          2 |         12 |         10
+(1 row)
+
+SELECT cache_get_text('ctr');
+ cache_get_text 
+----------------
+ 10
+(1 row)
+
+SELECT cache_incr('lock:1');
+ERROR:  pg_cache value for key "lock:1" is not an integer
+SELECT cache_set_text('maxc', '9223372036854775807');
+ cache_set_text 
+----------------
+ 
+(1 row)
+
+SELECT cache_incr('maxc');
+ERROR:  cache_incr result out of range
+-- keys
+SELECT k FROM cache_keys('s%') AS k ORDER BY 1;
+ k  
+----
+ s1
+ s3
+(2 rows)
+
+-- eviction: max_entries = 200 in the test configuration
+SELECT cache_flush() >= 0;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT count(cache_set_text('e' || g, repeat('v', 100))) FROM generate_series(1, 500) g;
+ count 
+-------
+   500
+(1 row)
+
+SELECT entries <= 200 AS capped, evictions > 0 AS evicted FROM cache_stats();
+ capped | evicted 
+--------+---------
+ t      | t
+(1 row)
+
+-- recently read keys survive (SIEVE): touch e450..e500, then add more
+SELECT count(cache_get_text('e' || g)) FROM generate_series(450, 500) g;
+ count 
+-------
+    51
+(1 row)
+
+SELECT count(cache_set_text('f' || g, repeat('v', 100))) FROM generate_series(1, 100) g;
+ count 
+-------
+   100
+(1 row)
+
+SELECT count(cache_get_text('e' || g)) AS hot_kept FROM generate_series(450, 500) g;
+ hot_kept 
+----------
+       51
+(1 row)
+
+-- memory cap: 1MB in the test configuration
+SELECT cache_flush() >= 0;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT count(cache_set_text('m' || g, repeat('v', 20000))) FROM generate_series(1, 150) g;
+ count 
+-------
+   150
+(1 row)
+
+SELECT used_bytes <= max_bytes AS within_budget, entries < 150 AS evicted_for_memory FROM cache_stats();
+ within_budget | evicted_for_memory 
+---------------+--------------------
+ t             | t
+(1 row)
+
+SELECT max_entries, max_bytes FROM cache_stats();
+ max_entries | max_bytes 
+-------------+-----------
+         200 |   1048576
+(1 row)
+
+-- privileges
+CREATE ROLE cache_user;
+SET ROLE cache_user;
+SELECT cache_get_text('x');
+ERROR:  permission denied for function cache_get_text
+RESET ROLE;
+GRANT EXECUTE ON FUNCTION cache_get_text(text) TO cache_user;
+SET ROLE cache_user;
+SELECT cache_get_text('ctr');
+ cache_get_text 
+----------------
+ 
+(1 row)
+
+RESET ROLE;
+REVOKE EXECUTE ON FUNCTION cache_get_text(text) FROM cache_user;
+DROP ROLE cache_user;
+DROP TABLE users;
+DROP EXTENSION pg_cache;

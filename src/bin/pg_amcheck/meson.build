@@ -6,11 +6,11 @@ pg_amcheck_sources = files(
 
 if host_system == 'windows'
   pg_amcheck_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_amcheck',
-    '--FILEDESC', 'al_amcheck - detect corruption within database relations',])
+    '--NAME', 'pg_amcheck',
+    '--FILEDESC', 'pg_amcheck - detect corruption within database relations',])
 endif
 
-pg_amcheck = executable('al_amcheck',
+pg_amcheck = executable('pg_amcheck',
   pg_amcheck_sources,
   dependencies: [frontend_code, libpq],
   kwargs: default_bin_args,

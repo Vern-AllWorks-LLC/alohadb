@@ -1,0 +1,5 @@
+# pg_kv extension
+comment = 'Key-value API with TTL on an unlogged table'
+default_version = '1.0'
+schema = public
+relocatable = false

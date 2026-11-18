@@ -1,0 +1,221 @@
+CREATE EXTENSION pg_kv;
+SELECT relpersistence FROM pg_class WHERE relname = 'kv_store';
+ relpersistence 
+----------------
+ u
+(1 row)
+
+SELECT kv_set('a', 'one');
+ kv_set 
+--------
+ 
+(1 row)
+
+SELECT kv_get('a');
+ kv_get 
+--------
+ one
+(1 row)
+
+SELECT kv_set('a', 'uno');
+ kv_set 
+--------
+ 
+(1 row)
+
+SELECT kv_get('a');
+ kv_get 
+--------
+ uno
+(1 row)
+
+SELECT kv_get('missing') IS NULL AS missing;
+ missing 
+---------
+ t
+(1 row)
+
+SELECT kv_del('a'), kv_del('a');
+ kv_del | kv_del 
+--------+--------
+ t      | f
+(1 row)
+
+SELECT kv_set(NULL, 'x');
+ERROR:  pg_kv key and value must not be NULL
+CONTEXT:  PL/pgSQL function kv_set(text,text,interval) line 5 at RAISE
+SELECT kv_set('x', 'y', '0 seconds');
+ERROR:  pg_kv TTL must be positive
+CONTEXT:  PL/pgSQL function kv_set(text,text,interval) line 8 at RAISE
+-- transactional, like any table
+BEGIN;
+SELECT kv_set('tx', 'v');
+ kv_set 
+--------
+ 
+(1 row)
+
+ROLLBACK;
+SELECT kv_get('tx') IS NULL AS rolled_back;
+ rolled_back 
+-------------
+ t
+(1 row)
+
+-- add / incr
+SELECT kv_add('lock', 'me'), kv_add('lock', 'you');
+ kv_add | kv_add 
+--------+--------
+ t      | f
+(1 row)
+
+SELECT kv_get('lock');
+ kv_get 
+--------
+ me
+(1 row)
+
+SELECT kv_incr('n'), kv_incr('n'), kv_incr('n', 5), kv_incr('n', -1);
+ kv_incr | kv_incr | kv_incr | kv_incr 
+---------+---------+---------+---------
+       1 |       2 |       7 |       6
+(1 row)
+
+SELECT kv_incr('lock');
+ERROR:  pg_kv value for key "lock" is not an integer
+CONTEXT:  PL/pgSQL function kv_incr(text,bigint,interval) line 29 at RAISE
+-- TTL
+SELECT kv_set('t', 'x', '1 hour');
+ kv_set 
+--------
+ 
+(1 row)
+
+SELECT kv_ttl('t') BETWEEN '59 minutes' AND '1 hour' AS ttl_ok;
+ ttl_ok 
+--------
+ t
+(1 row)
+
+SELECT kv_ttl('n');
+  kv_ttl  
+----------
+ infinity
+(1 row)
+
+SELECT kv_ttl('none') IS NULL AS ttl_missing;
+ ttl_missing 
+-------------
+ t
+(1 row)
+
+SELECT kv_expire('n', '10 minutes'), kv_ttl('n') <= '10 minutes' AS expire_applied;
+ kv_expire | expire_applied 
+-----------+----------------
+ t         | t
+(1 row)
+
+SELECT kv_expire('n', NULL), kv_ttl('n');
+ kv_expire |  kv_ttl  
+-----------+----------
+ t         | infinity
+(1 row)
+
+SELECT kv_expire('none', '1 minute');
+ kv_expire 
+-----------
+ f
+(1 row)
+
+SELECT kv_set('short', 'x', '50 milliseconds');
+ kv_set 
+--------
+ 
+(1 row)
+
+SELECT kv_add('short2', 'x', '50 milliseconds');
+ kv_add 
+--------
+ t
+(1 row)
+
+SELECT kv_incr('short3', 7, '50 milliseconds');
+ kv_incr 
+---------
+       7
+(1 row)
+
+SELECT pg_sleep(0.2);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT kv_get('short') IS NULL AS expired;
+ expired 
+---------
+ t
+(1 row)
+
+SELECT kv_add('short2', 'again') AS add_over_expired, kv_get('short2');
+ add_over_expired | kv_get 
+------------------+--------
+ t                | again
+(1 row)
+
+SELECT kv_incr('short3') AS incr_restarts, kv_ttl('short3');
+ incr_restarts |  kv_ttl  
+---------------+----------
+             1 | infinity
+(1 row)
+
+SELECT kv_del('short') AS del_expired_is_false;
+ del_expired_is_false 
+----------------------
+ f
+(1 row)
+
+SELECT kv_purge_expired();
+ kv_purge_expired 
+------------------
+                0
+(1 row)
+
+-- multi-get and key listing
+SELECT * FROM kv_get_many(ARRAY['lock', 'n', 'nope']) ORDER BY key;
+ key  | value 
+------+-------
+ lock | me
+ n    | 6
+(2 rows)
+
+SELECT kv_keys('s%');
+ kv_keys 
+---------
+ short2
+ short3
+(2 rows)
+
+SELECT kv_keys();
+ kv_keys 
+---------
+ lock
+ n
+ short2
+ short3
+ t
+(5 rows)
+
+SELECT kv_flush() AS flushed;
+ flushed 
+---------
+       5
+(1 row)
+
+SELECT count(*) FROM kv_keys();
+ count 
+-------
+     0
+(1 row)
+
+DROP EXTENSION pg_kv;

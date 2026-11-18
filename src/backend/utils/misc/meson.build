@@ -35,6 +35,6 @@ backend_link_with += static_library('guc-file',
   kwargs: internal_lib_args,
 )
 
-install_data('alohadb.conf.sample',
+install_data('postgresql.conf.sample',
   install_dir: dir_data,
 )

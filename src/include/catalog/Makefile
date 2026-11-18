@@ -14,7 +14,7 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 # Note: the order of this list determines the order in which the catalog
-# header files are assembled into alohadb.bki.  BKI_BOOTSTRAP catalogs
+# header files are assembled into postgres.bki.  BKI_BOOTSTRAP catalogs
 # must appear first, and pg_statistic before pg_statistic_ext_data, and
 # there are reputedly other, undocumented ordering dependencies.
 CATALOG_HEADERS := \
@@ -116,7 +116,7 @@ POSTGRES_BKI_DATA = \
 
 GENBKI_OUTPUT_FILES = \
 	$(GENERATED_HEADERS) \
-	alohadb.bki \
+	postgres.bki \
 	system_constraints.sql \
 	schemapg.h \
 	syscache_ids.h \
@@ -143,7 +143,7 @@ bki-stamp: $(top_srcdir)/src/backend/catalog/genbki.pl $(top_srcdir)/src/backend
 	touch $@
 
 install: all installdirs
-	$(INSTALL_DATA) alohadb.bki '$(DESTDIR)$(datadir)/alohadb.bki'
+	$(INSTALL_DATA) postgres.bki '$(DESTDIR)$(datadir)/postgres.bki'
 	$(INSTALL_DATA) system_constraints.sql '$(DESTDIR)$(datadir)/system_constraints.sql'
 # In non-vpath builds, src/include/Makefile already installs all headers.
 ifeq ($(vpath_build),yes)
@@ -159,7 +159,7 @@ installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(datadir)' '$(DESTDIR)$(includedir_server)'
 
 uninstall:
-	rm -f $(addprefix '$(DESTDIR)$(datadir)'/, alohadb.bki system_constraints.sql)
+	rm -f $(addprefix '$(DESTDIR)$(datadir)'/, postgres.bki system_constraints.sql)
 	rm -f $(addprefix '$(DESTDIR)$(includedir_server)'/catalog/, schemapg.h syscache_ids.h system_fk_info.h $(GENERATED_HEADERS))
 
 clean:

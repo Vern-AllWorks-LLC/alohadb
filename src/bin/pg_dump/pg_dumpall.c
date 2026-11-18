@@ -228,7 +228,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if ((ret = find_other_exec(argv[0], "al_dump", PGDUMP_VERSIONSTR,
+	if ((ret = find_other_exec(argv[0], "pg_dump", PGDUMP_VERSIONSTR,
 							   pg_dump_bin)) < 0)
 	{
 		char		full_path[MAXPGPATH];
@@ -238,10 +238,10 @@ main(int argc, char *argv[])
 
 		if (ret == -1)
 			pg_fatal("program \"%s\" is needed by %s but was not found in the same directory as \"%s\"",
-					 "al_dump", progname, full_path);
+					 "pg_dump", progname, full_path);
 		else
 			pg_fatal("program \"%s\" was found by \"%s\" but was not the same version as %s",
-					 "al_dump", full_path, progname);
+					 "pg_dump", full_path, progname);
 	}
 
 	pgdumpopts = createPQExpBuffer();

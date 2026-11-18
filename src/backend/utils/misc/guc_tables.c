@@ -4785,7 +4785,7 @@ struct config_string ConfigureNamesString[] =
 			NULL
 		},
 		&syslog_ident_str,
-		"alohadb",
+		"postgres",
 		NULL, assign_syslog_ident, NULL
 	},
 
@@ -5171,7 +5171,7 @@ struct config_string ConfigureNamesString[] =
 			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY
 		},
 		&output_plugin_libraries_string,
-		"pgoutput, test_decoding, alohadb_cdc_arrow",
+		"pgoutput, test_decoding, pg_cdc_arrow",
 		check_output_plugin_libraries, NULL, NULL
 	},
 

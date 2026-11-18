@@ -103,7 +103,7 @@ bki_data_f = files(bki_data)
 
 input = []
 output_files = [
-  'alohadb.bki',
+  'postgres.bki',
   'system_constraints.sql',
   'schemapg.h',
   'syscache_ids.h',

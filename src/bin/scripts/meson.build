@@ -7,14 +7,14 @@ scripts_common = static_library('libscripts_common',
 )
 
 binaries = [
-  ['createdb', 'alcreatedb'],
-  ['dropdb', 'aldropdb'],
-  ['createuser', 'alcreateuser'],
-  ['dropuser', 'aldropuser'],
-  ['clusterdb', 'alclusterdb'],
-  ['vacuumdb', 'alvacuumdb'],
-  ['reindexdb', 'alreindexdb'],
-  ['pg_isready', 'al_isready'],
+  ['createdb', 'createdb'],
+  ['dropdb', 'dropdb'],
+  ['createuser', 'createuser'],
+  ['dropuser', 'dropuser'],
+  ['clusterdb', 'clusterdb'],
+  ['vacuumdb', 'vacuumdb'],
+  ['reindexdb', 'reindexdb'],
+  ['pg_isready', 'pg_isready'],
 ]
 
 foreach pair : binaries

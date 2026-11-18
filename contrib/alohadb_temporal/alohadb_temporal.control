@@ -1,4 +1,0 @@
-comment = 'SQL:2011-style system-versioned temporal tables with time-travel queries'
-default_version = '1.1'
-module_pathname = '$libdir/alohadb_temporal'
-relocatable = false

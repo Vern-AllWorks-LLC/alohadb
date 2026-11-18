@@ -8,7 +8,7 @@
 
 project('alohadb',
   ['c'],
-  version: '20.3',
+  version: '21.0',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for
@@ -136,10 +136,10 @@ pg_version_major = pg_version_arr[0].to_int()
 pg_version_minor = pg_version_arr[1].to_int()
 pg_version_num = (pg_version_major * 10000) + pg_version_minor
 
-pg_url = 'https://alohadb.org/'
+pg_url = 'https://vernallworks.com/docs-alohadb.php'
 
 cdata.set_quoted('PACKAGE_NAME', 'AlohaDB')
-cdata.set_quoted('PACKAGE_BUGREPORT', 'bugs@alohadb.org')
+cdata.set_quoted('PACKAGE_BUGREPORT', 'info@vernallworks.com')
 cdata.set_quoted('PACKAGE_URL', pg_url)
 cdata.set_quoted('PACKAGE_VERSION', pg_version)
 cdata.set_quoted('PACKAGE_STRING', 'AlohaDB @0@'.format(pg_version))
@@ -487,7 +487,7 @@ endif
 # append "postgresql" to some of them, if the string does not already
 # contain "pgsql" or "postgres", in order to avoid directory clutter.
 
-pkg = 'alohadb'
+pkg = 'postgresql'
 
 dir_prefix = get_option('prefix')
 

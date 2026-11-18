@@ -1,5 +1,0 @@
-comment = 'AlohaDB Kafka - Inbound streaming consumer for Apache Kafka and Amazon Kinesis'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_kafka'
-schema = public
-relocatable = false

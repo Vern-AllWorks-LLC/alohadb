@@ -1,0 +1,4 @@
+comment = 'AlohaDB Parquet, CSV, and JSON file reader; Parquet and Arrow IPC writer'
+default_version = '1.2'
+module_pathname = '$libdir/pg_parquetio'
+relocatable = false

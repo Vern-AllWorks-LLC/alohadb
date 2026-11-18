@@ -30,7 +30,7 @@ if gssapi.found()
 endif
 
 install_data(
-  'al_hba.conf.sample',
-  'al_ident.conf.sample',
+  'pg_hba.conf.sample',
+  'pg_ident.conf.sample',
   install_dir: dir_data,
 )

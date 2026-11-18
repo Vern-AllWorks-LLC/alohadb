@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+#
+# pg_alohadb_convert_db -- convert a cluster upgraded from AlohaDB 20.x
+# (extensions named alohadb_*) to the AlohaDB 21 names (pg_*).
+#
+# For every database (or those given with -d) it runs
+# $(pg_config --sharedir)/pg_alohadb_convert_db.sql, which renames installed
+# alohadb_* extensions, their tables, functions, types, indexes, roles,
+# comments, per-database/per-role settings and scheduled job commands in
+# place -- no data is copied or lost -- and updates them to their current
+# versions.  With -D it also converts the configuration files in the data
+# directory (alohadb.conf -> postgresql.conf, al_hba.conf -> pg_hba.conf,
+# alohadb.* settings, shared_preload_libraries entries).
+#
+# Typical use after "pg_upgrade" from AlohaDB 20.x:
+#
+#   pg_alohadb_convert_db -D /path/to/new/data --config-only   # server stopped
+#   pg_ctl -D /path/to/new/data start
+#   pg_alohadb_convert_db -p 5432 -U postgres                  # all databases
+#
+# Copyright (c) 2026, AlohaDB
+#
+# src/bin/pg_alohadb_convert/pg_alohadb_convert_db
+#
+# Generated from rename_map.json by generate.py -- do not edit.
+
+import argparse
+import collections
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+@COMMON@
+
+BINDIR = os.path.dirname(os.path.realpath(__file__))
+EXE = ".exe" if os.name == "nt" else ""
+
+
+def find_program(name):
+    p = os.path.join(BINDIR, name + EXE)
+    if os.path.exists(p):
+        return p
+    p = shutil.which(name)
+    if p:
+        return p
+    sys.exit("pg_alohadb_convert_db: could not find %s" % name)
+
+
+def sharedir():
+    out = subprocess.run([find_program("pg_config"), "--sharedir"],
+                         capture_output=True, text=True, check=True).stdout
+    return out.strip()
+
+
+def convert_config(pgdata, check):
+    """Rename and convert the configuration files of a data directory."""
+    targets = []
+    for old, new in MAP["files"].items():
+        if not old.endswith(".conf"):
+            continue
+        po, pn = os.path.join(pgdata, old), os.path.join(pgdata, new)
+        if os.path.exists(po) and os.path.exists(pn):
+            print("%s: both %s and %s exist; leaving %s alone" % (pgdata, old, new, old))
+        elif os.path.exists(po):
+            print("rename %s -> %s" % (po, pn))
+            if check:
+                pn = po
+            else:
+                os.rename(po, pn)
+        if os.path.exists(pn) and new.startswith("postgresql"):
+            targets.append(pn)
+    for path in targets:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        counts = collections.Counter()
+        out = convert(text, counts)
+        if out == text:
+            continue
+        print("%s: %d change(s)" % (path, sum(counts.values())))
+        for (old, new), n in sorted(counts.items()):
+            print("  %-40s -> %s" % (old, new))
+        if not check:
+            shutil.copy2(path, path + ".bak")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Convert databases (and optionally the data directory "
+                    "configuration) from AlohaDB 20.x extension names "
+                    "(alohadb_*) to AlohaDB 21 names (pg_*).",
+        add_help=False)
+    ap.add_argument("-d", "--dbname", action="append",
+                    help="database to convert (repeatable; default: all)")
+    ap.add_argument("-h", "--host")
+    ap.add_argument("-p", "--port")
+    ap.add_argument("-U", "--username")
+    ap.add_argument("-D", "--pgdata",
+                    help="also convert the configuration files in this data directory")
+    ap.add_argument("--config-only", action="store_true",
+                    help="only convert the configuration files (-D); no connection")
+    ap.add_argument("--check", action="store_true",
+                    help="configuration files: only report what would change")
+    ap.add_argument("--help", action="help")
+    args = ap.parse_args()
+
+    if args.pgdata:
+        convert_config(args.pgdata, args.check)
+        if args.config_only:
+            return 0
+    elif args.config_only:
+        ap.error("--config-only requires -D")
+    if args.check:
+        return 0
+
+    psql = [find_program("psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1"]
+    for opt, val in (("-h", args.host), ("-p", args.port), ("-U", args.username)):
+        if val:
+            psql += [opt, val]
+
+    script = os.path.join(sharedir(), "pg_alohadb_convert_db.sql")
+    if not os.path.exists(script):
+        sys.exit("pg_alohadb_convert_db: %s not found" % script)
+
+    dbs = args.dbname
+    if not dbs:
+        out = subprocess.run(psql + ["-d", "postgres", "-At", "-c",
+                                     "SELECT datname FROM pg_database "
+                                     "WHERE datallowconn ORDER BY 1"],
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            sys.stderr.write(out.stderr)
+            return 1
+        dbs = [d for d in out.stdout.splitlines() if d]
+
+    status = 0
+    for db in dbs:
+        print("== %s" % db)
+        r = subprocess.run(psql + ["-d", db, "-f", script])
+        if r.returncode != 0:
+            print("pg_alohadb_convert_db: conversion of database \"%s\" failed "
+                  "(it was rolled back)" % db, file=sys.stderr)
+            status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

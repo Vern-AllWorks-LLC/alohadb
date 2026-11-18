@@ -21,11 +21,11 @@ pgbench_sources += exprparse
 
 if host_system == 'windows'
   pgbench_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'albench',
-    '--FILEDESC', 'albench - a simple program for running benchmark tests'])
+    '--NAME', 'pgbench',
+    '--FILEDESC', 'pgbench - a simple program for running benchmark tests'])
 endif
 
-pgbench = executable('albench',
+pgbench = executable('pgbench',
   pgbench_sources,
   dependencies: [frontend_code, libpq, thread_dep],
   include_directories: include_directories('.'),

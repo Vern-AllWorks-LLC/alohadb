@@ -6,11 +6,11 @@ pg_test_timing_sources = files(
 
 if host_system == 'windows'
   pg_test_timing_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_test_timing',
-    '--FILEDESC', 'al_test_timing - test timing overhead'])
+    '--NAME', 'pg_test_timing',
+    '--FILEDESC', 'pg_test_timing - test timing overhead'])
 endif
 
-pg_test_timing = executable('al_test_timing',
+pg_test_timing = executable('pg_test_timing',
   pg_test_timing_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,

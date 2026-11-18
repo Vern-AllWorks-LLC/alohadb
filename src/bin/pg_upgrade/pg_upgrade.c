@@ -193,7 +193,7 @@ main(int argc, char **argv)
 	 */
 	prep_status("Setting next OID for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/al_resetwal\" -o %u \"%s\"",
+			  "\"%s/pg_resetwal\" -o %u \"%s\"",
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtoid,
 			  new_cluster.pgdata);
 	check_ok();
@@ -217,7 +217,7 @@ main(int argc, char **argv)
 	{
 		prep_status("Sync data directory to disk");
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/alinitdb\" --sync-only %s \"%s\" --sync-method %s",
+				  "\"%s/initdb\" --sync-only %s \"%s\" --sync-method %s",
 				  new_cluster.bindir,
 				  (user_opts.transfer_mode == TRANSFER_MODE_SWAP) ?
 				  "--no-sync-data-files" : "",
@@ -421,7 +421,7 @@ set_new_cluster_char_signedness(void)
 		prep_status("Setting the default char signedness for new cluster");
 
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/al_resetwal\" --char-signedness %s \"%s\"",
+				  "\"%s/pg_resetwal\" --char-signedness %s \"%s\"",
 				  new_cluster.bindir,
 				  new_char_signedness ? "signed" : "unsigned",
 				  new_cluster.pgdata);
@@ -526,7 +526,7 @@ prepare_new_cluster(void)
 	 */
 	prep_status("Analyzing all rows in the new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/alvacuumdb\" %s --all --analyze %s",
+			  "\"%s/vacuumdb\" %s --all --analyze %s",
 			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
 			  log_opts.verbose ? "--verbose" : "");
 	check_ok();
@@ -539,7 +539,7 @@ prepare_new_cluster(void)
 	 */
 	prep_status("Freezing all rows in the new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/alvacuumdb\" %s --all --freeze %s",
+			  "\"%s/vacuumdb\" %s --all --freeze %s",
 			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
 			  log_opts.verbose ? "--verbose" : "");
 	check_ok();
@@ -560,7 +560,7 @@ prepare_new_globals(void)
 	prep_status("Restoring global objects in the new cluster");
 
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/alsql\" " EXEC_PSQL_ARGS " %s -f \"%s/%s\"",
+			  "\"%s/psql\" " EXEC_PSQL_ARGS " %s -f \"%s/%s\"",
 			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
 			  log_opts.dumpdir,
 			  GLOBALS_DUMP_FILE);
@@ -618,7 +618,7 @@ create_new_objects(void)
 				  NULL,
 				  true,
 				  true,
-				  "\"%s/al_restore\" %s %s --exit-on-error --verbose "
+				  "\"%s/pg_restore\" %s %s --exit-on-error --verbose "
 				  "--transaction-size=%d "
 				  "--dbname postgres \"%s/%s\"",
 				  new_cluster.bindir,
@@ -672,7 +672,7 @@ create_new_objects(void)
 
 		parallel_exec_prog(log_file_name,
 						   NULL,
-						   "\"%s/al_restore\" %s %s --exit-on-error --verbose "
+						   "\"%s/pg_restore\" %s %s --exit-on-error --verbose "
 						   "--transaction-size=%d "
 						   "--dbname template1 \"%s/%s\"",
 						   new_cluster.bindir,
@@ -760,7 +760,7 @@ copy_xact_xlog_xid(void)
 
 	prep_status("Setting oldest XID for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/al_resetwal\" -f -u %u \"%s\"",
+			  "\"%s/pg_resetwal\" -f -u %u \"%s\"",
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_oldstxid,
 			  new_cluster.pgdata);
 	check_ok();
@@ -768,16 +768,16 @@ copy_xact_xlog_xid(void)
 	/* set the next transaction id and epoch of the new cluster */
 	prep_status("Setting next transaction ID and epoch for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/al_resetwal\" -f -x %u \"%s\"",
+			  "\"%s/pg_resetwal\" -f -x %u \"%s\"",
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtxid,
 			  new_cluster.pgdata);
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/al_resetwal\" -f -e %u \"%s\"",
+			  "\"%s/pg_resetwal\" -f -e %u \"%s\"",
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtepoch,
 			  new_cluster.pgdata);
 	/* must reset commit timestamp limits also */
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/al_resetwal\" -f -c %u,%u \"%s\"",
+			  "\"%s/pg_resetwal\" -f -c %u,%u \"%s\"",
 			  new_cluster.bindir,
 			  old_cluster.controldata.chkpnt_nxtxid,
 			  old_cluster.controldata.chkpnt_nxtxid,
@@ -803,7 +803,7 @@ copy_xact_xlog_xid(void)
 		 * counters here and the oldest multi present on system.
 		 */
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/al_resetwal\" -O %u -m %u,%u \"%s\"",
+				  "\"%s/pg_resetwal\" -O %u -m %u,%u \"%s\"",
 				  new_cluster.bindir,
 				  old_cluster.controldata.chkpnt_nxtmxoff,
 				  old_cluster.controldata.chkpnt_nxtmulti,
@@ -831,7 +831,7 @@ copy_xact_xlog_xid(void)
 		 * next=MaxMultiXactId, but multixact.c can cope with that just fine.
 		 */
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/al_resetwal\" -m %u,%u \"%s\"",
+				  "\"%s/pg_resetwal\" -m %u,%u \"%s\"",
 				  new_cluster.bindir,
 				  old_cluster.controldata.chkpnt_nxtmulti + 1,
 				  old_cluster.controldata.chkpnt_nxtmulti,
@@ -843,7 +843,7 @@ copy_xact_xlog_xid(void)
 	prep_status("Resetting WAL archives");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 	/* use timeline 1 to match controldata and no WAL history file */
-			  "\"%s/al_resetwal\" -l 00000001%s \"%s\"", new_cluster.bindir,
+			  "\"%s/pg_resetwal\" -l 00000001%s \"%s\"", new_cluster.bindir,
 			  old_cluster.controldata.nextxlogfile + 8,
 			  new_cluster.pgdata);
 	check_ok();

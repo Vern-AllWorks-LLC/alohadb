@@ -2387,14 +2387,14 @@ regression_main(int argc, char *argv[],
 		pfree(cmd.data);
 
 		/*
-		 * Adjust the default alohadb.conf for regression testing. The user
+		 * Adjust the default postgresql.conf for regression testing. The user
 		 * can specify a file to be appended; in any case we expand logging
 		 * and set max_prepared_transactions to enable testing of prepared
 		 * xacts.  (Note: to reduce the probability of unexpected shmmax
 		 * failures, don't set max_prepared_transactions any higher than
 		 * actually needed by the prepared_xacts regression test.)
 		 */
-		snprintf(buf, sizeof(buf), "%s/data/alohadb.conf", temp_instance);
+		snprintf(buf, sizeof(buf), "%s/data/postgresql.conf", temp_instance);
 		pg_conf = fopen(buf, "a");
 		if (pg_conf == NULL)
 			bail("could not open \"%s\" for adding extra config: %m", buf);

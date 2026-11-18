@@ -15,26 +15,26 @@
 
 -- Apply a named configuration profile (oltp, analytics, ai_ml, hybrid).
 -- Requires superuser privileges.
-CREATE OR REPLACE FUNCTION alohadb_apply_profile(text)
+CREATE OR REPLACE FUNCTION pg_apply_profile(text)
 RETURNS void
-AS 'alohadb_apply_profile'
+AS 'pg_apply_profile'
 LANGUAGE internal
 VOLATILE STRICT;
 
-COMMENT ON FUNCTION alohadb_apply_profile(text)
+COMMENT ON FUNCTION pg_apply_profile(text)
 IS 'Apply an auto-tuning configuration profile (oltp, analytics, ai_ml, hybrid)';
 
 -- Detect hardware and return component/value pairs.
-CREATE OR REPLACE FUNCTION alohadb_detect_hardware(
+CREATE OR REPLACE FUNCTION pg_detect_hardware(
     OUT component text,
     OUT value text
 )
 RETURNS SETOF record
-AS 'alohadb_detect_hardware'
+AS 'pg_detect_hardware'
 LANGUAGE internal
 VOLATILE;
 
-COMMENT ON FUNCTION alohadb_detect_hardware()
+COMMENT ON FUNCTION pg_detect_hardware()
 IS 'Detect hardware characteristics for auto-tuning profiles';
 
 /*
@@ -43,13 +43,13 @@ IS 'Detect hardware characteristics for auto-tuning profiles';
  * entries to src/include/catalog/pg_proc.dat before the closing ']':
  *
  * { oid => '9510', descr => 'apply an auto-tuning configuration profile',
- *   proname => 'alohadb_apply_profile', prorettype => 'void',
+ *   proname => 'pg_apply_profile', prorettype => 'void',
  *   proargtypes => 'text', provolatile => 'v',
- *   prosrc => 'alohadb_apply_profile' },
+ *   prosrc => 'pg_apply_profile' },
  * { oid => '9511', descr => 'detect hardware for auto-tuning profiles',
- *   proname => 'alohadb_detect_hardware', prorows => '10', proretset => 't',
+ *   proname => 'pg_detect_hardware', prorows => '10', proretset => 't',
  *   prorettype => 'record', proargtypes => '',
  *   proallargtypes => '{text,text}', proargmodes => '{o,o}',
  *   proargnames => '{component,value}', provolatile => 'v',
- *   prosrc => 'alohadb_detect_hardware' },
+ *   prosrc => 'pg_detect_hardware' },
  */

@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2025, PostgreSQL Global Development Group
 
 subdir('initdb')
+subdir('pg_alohadb_convert')
 subdir('pg_amcheck')
 subdir('pg_archivecleanup')
 subdir('pg_basebackup')
