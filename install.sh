@@ -484,7 +484,7 @@ if [[ -d /etc/systemd/system ]] && [[ ! -f "$SYSTEMD_FILE" ]]; then
     cat > "$SYSTEMD_FILE" <<SYSTEMD
 [Unit]
 Description=AlohaDB ${ALOHADB_VERSION} Database Server
-Documentation=https://opencan.ai/
+Documentation=https://vernallworks.com/docs-alohadb.php
 After=network-online.target
 Wants=network-online.target
 
@@ -592,5 +592,5 @@ else
 echo -e "    sudo -u $DB_USER $INSTALL_PREFIX/bin/pg_ctl -D $DATA_DIR start|stop|restart|status"
 fi
 echo ""
-echo -e "  ${BOLD}User guide:${NC} https://opencan.ai/alohadb-guide.html"
+echo -e "  ${BOLD}User guide:${NC} https://vernallworks.com/docs-alohadb.php"
 echo ""

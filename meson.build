@@ -136,7 +136,7 @@ pg_version_major = pg_version_arr[0].to_int()
 pg_version_minor = pg_version_arr[1].to_int()
 pg_version_num = (pg_version_major * 10000) + pg_version_minor
 
-pg_url = 'https://alohadb.org/'
+pg_url = 'https://vernallworks.com/docs-alohadb.php'
 
 cdata.set_quoted('PACKAGE_NAME', 'AlohaDB')
 cdata.set_quoted('PACKAGE_BUGREPORT', 'info@vernallworks.com')
