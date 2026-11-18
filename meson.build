@@ -139,7 +139,7 @@ pg_version_num = (pg_version_major * 10000) + pg_version_minor
 pg_url = 'https://alohadb.org/'
 
 cdata.set_quoted('PACKAGE_NAME', 'AlohaDB')
-cdata.set_quoted('PACKAGE_BUGREPORT', 'bugs@alohadb.org')
+cdata.set_quoted('PACKAGE_BUGREPORT', 'info@vernallworks.com')
 cdata.set_quoted('PACKAGE_URL', pg_url)
 cdata.set_quoted('PACKAGE_VERSION', pg_version)
 cdata.set_quoted('PACKAGE_STRING', 'AlohaDB @0@'.format(pg_version))
