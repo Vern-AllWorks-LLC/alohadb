@@ -756,7 +756,7 @@ SELECT pipeline_run('nightly_etl');
 
 ### `pg_python` — Managed Python execution
 
-Python as a first-class workload with a script registry, environments, and managed execution. Code may `return` a value or assign `_result`; arguments are available as `args` (dict), `_args` (JSON text) and as plain variables named after each key. Requires PL/Python: the prebuilt packages include it together with their own Python runtime in `<install>/python` (add libraries with `<install>/python/bin/python3 -m pip install ...` on Linux/macOS); source builds need `-Dplpython=enabled`.
+Python as a first-class workload with a script registry, environments, and managed execution. Code may `return` a value or assign `_result`; arguments are available as `args` (dict), `_args` (JSON text) and as plain variables named after each key. Requires PL/Python: the prebuilt packages include it together with their own Python runtime in `<install>/python`, [Xue](https://vernallworks.com/docs-xue.php) (CPython 3.15 plus the `xue` library: `Result`/`Option`, `Secret`, contracts, physical units, tensors, autodiff, sandboxed imports). Add libraries with `<install>/python/bin/python3 -m pip install ...` (Linux/macOS) or `<install>\python\python.exe -m pip install ...` (Windows). Source builds need `-Dplpython=enabled` and use whichever Python 3 they are built against.
 
 ```sql
 CREATE EXTENSION pg_python CASCADE;   -- also installs plpython3u
@@ -766,6 +766,8 @@ SELECT python_exec('normalize', '{"value":"  Hello "}');
 ```
 
 **Use case:** Register and version reusable Python transforms and call them from SQL.
+
+**Tip:** The `xue` modules are available to PL/Python and `pg_python` code, e.g. `from xue.units import meters` or `from xue.secret import Secret`. Xue's opt-in startup features follow the server's environment: setting `XUE_STRICT=1` for the server process (for example in its systemd unit) turns on runtime type checking of annotated Python functions.
 
 ### `pg_codefs` — Versioned virtual filesystem
 
@@ -955,6 +957,11 @@ pg_alohadb_convert_db -U postgres                     # every database (or -d DB
 **Tip:** Application code that calls renamed functions (for example `alohadb_vault_fetch()`) or sets renamed settings needs the same conversion; run `pg_alohadb_convert_sql` over it. A dump taken from 20.x can be converted with `pg_alohadb_convert_sql` and restored into 21.
 
 ## Release notes
+
+### 21.1.0 — November 2026
+
+- **Xue is the bundled Python runtime.** PL/Python and `pg_python` in the prebuilt packages now run on [Xue](https://vernallworks.com/docs-xue.php) 1.2.0 — CPython **3.15.2** (standard build, with the GIL) plus the `xue` library — on every platform. It replaces CPython 3.12 (Linux/macOS) and the MinGW CPython (Windows). On Windows, PL/Python now uses the standard MSVC-built CPython, so binary wheels from PyPI install with `pip`.
+- **Upgrade note:** no catalog change; 21.0 clusters run on the 21.1 binaries as they are. Python packages installed into a 21.0 package's `python/` directory were built for Python 3.12 (or MinGW 3.14) and must be reinstalled with the new runtime's `pip`.
 
 ### 21.0.0 — November 2026
 
