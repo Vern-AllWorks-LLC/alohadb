@@ -1,4 +1,0 @@
-comment = 'AlohaDB CodeFS - virtual filesystem with git-like versioning for AI-native development'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_codefs'
-relocatable = false

@@ -6,11 +6,11 @@ pg_resetwal_sources = files(
 
 if host_system == 'windows'
   pg_resetwal_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_resetwal',
-    '--FILEDESC', 'al_resetwal - reset AlohaDB WAL log'])
+    '--NAME', 'pg_resetwal',
+    '--FILEDESC', 'pg_resetwal - reset AlohaDB WAL log'])
 endif
 
-pg_resetwal = executable('al_resetwal',
+pg_resetwal = executable('pg_resetwal',
   pg_resetwal_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,

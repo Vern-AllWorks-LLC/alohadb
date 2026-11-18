@@ -1,0 +1,5 @@
+comment = 'AlohaDB Model Registry - ML model versioning, deployment, and experiment tracking'
+default_version = '1.0'
+module_pathname = '$libdir/pg_model_registry'
+schema = public
+relocatable = false

@@ -1,0 +1,373 @@
+\echo Use "CREATE EXTENSION pg_python" to load this file. \quit
+
+-- -------------------------------------------------------------------------
+-- pg_python: Python as a first-class workload
+--
+-- Execution model: all Python runs inside PostgreSQL's built-in plpython3u
+-- language handler (in-process, no subprocess, no new runtime).
+-- Python's exec() builtin dispatches user-supplied code strings — a
+-- technique with prior art since Python 1.0 (1994), well outside any
+-- patent window.
+-- -------------------------------------------------------------------------
+
+-- Environment registry: records which packages a script requires.
+-- This is metadata only; actual package installation is outside the DB.
+CREATE TABLE pg_python_envs (
+    env_name        text        NOT NULL PRIMARY KEY,
+    python_version  text        NOT NULL DEFAULT '3',
+    packages        text[]      NOT NULL DEFAULT '{}',
+    description     text,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO pg_python_envs (env_name, description)
+VALUES ('default', 'Default Python environment');
+
+-- Script catalog: stores Python scripts as versioned database objects.
+-- Each INSERT via python_register() bumps the version; all versions are kept.
+CREATE TABLE pg_python_scripts (
+    script_name     text        NOT NULL,
+    version         int         NOT NULL DEFAULT 1,
+    code            text        NOT NULL,
+    description     text,
+    env_name        text        NOT NULL DEFAULT 'default'
+                                REFERENCES pg_python_envs(env_name),
+    return_type     text        NOT NULL DEFAULT 'jsonb',
+    created_by      text        NOT NULL DEFAULT current_user,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (script_name, version)
+);
+
+CREATE INDEX pg_python_scripts_name_idx
+    ON pg_python_scripts (script_name);
+
+-- Execution log: every python_eval() / python_exec() call is recorded.
+CREATE TABLE pg_python_executions (
+    exec_id         bigserial   PRIMARY KEY,
+    script_name     text,           -- NULL for ad-hoc python_eval calls
+    script_version  int,
+    exec_mode       text        NOT NULL DEFAULT 'sync',
+    args            jsonb,
+    result          jsonb,
+    error_message   text,
+    duration_ms     float8,
+    executed_by     text        NOT NULL DEFAULT current_user,
+    started_at      timestamptz NOT NULL DEFAULT now(),
+    completed_at    timestamptz
+);
+
+CREATE INDEX pg_python_executions_script_idx
+    ON pg_python_executions (script_name);
+CREATE INDEX pg_python_executions_time_idx
+    ON pg_python_executions (started_at DESC);
+
+-- Scripts, environments and history must survive pg_dump / pg_dumpall
+SELECT pg_catalog.pg_extension_config_dump('pg_python_envs', 'WHERE env_name <> ''default''');
+SELECT pg_catalog.pg_extension_config_dump('pg_python_scripts', '');
+SELECT pg_catalog.pg_extension_config_dump('pg_python_executions', '');
+SELECT pg_catalog.pg_extension_config_dump('pg_python_executions_exec_id_seq', '');
+
+-- -------------------------------------------------------------------------
+-- Core execution engine: a single plpython3u function that runs arbitrary
+-- Python code passed as a string using Python's built-in exec().
+--
+-- Contract for user code (both styles work):
+--   - `args` is a Python dict built from the jsonb argument, `_args` is the
+--     same arguments as a JSON string, and every argument whose key is a
+--     valid Python identifier is also available as a plain variable
+--     (e.g. args["value"] can be written as just `value`).
+--   - Either `return <value>` (the code is wrapped in a function), or
+--     assign the output to `_result` at module level.
+--   - The value must be JSON-serialisable (or None).
+--   - import statements and helper definitions are allowed anywhere.
+--
+-- Patent-mitigation note:
+--   Using exec() to run dynamic code strings is a Python core-language
+--   feature (Python 1.0, 1994). Delegating to plpython3u avoids any new
+--   Python runtime; plpython3u has shipped with PostgreSQL since 8.1 (2005).
+--   No Databricks/MLflow/notebook patents apply to this single-node,
+--   in-process, SQL-managed execution model.
+-- -------------------------------------------------------------------------
+CREATE FUNCTION pg_python_runner(p_code text, p_args_json text)
+RETURNS text
+LANGUAGE plpython3u
+AS $$
+import json
+import keyword
+import textwrap
+import traceback
+
+args = json.loads(p_args_json) if p_args_json else {}
+if not isinstance(args, dict):
+    args = {'value': args}
+
+_reserved = {'args', '_args', '_result'}
+g = {'__builtins__': __builtins__, '__name__': '__alohadb__'}
+for k, v in args.items():
+    if (isinstance(k, str) and k.isidentifier()
+            and not keyword.iskeyword(k) and k not in _reserved):
+        g[k] = v
+g.update({'args': args, '_args': p_args_json or '{}', '_result': None})
+
+try:
+    try:
+        code = compile(p_code, '<pg_python>', 'exec')
+        wrapped = False
+    except SyntaxError as e:
+        if 'outside function' not in str(e):
+            raise
+        # Code uses a top-level "return": run it as a function body.
+        src = 'def __alohadb_main__():\n' + textwrap.indent(p_code, '    ') + '\n'
+        code = compile(src, '<pg_python>', 'exec')
+        wrapped = True
+    exec(code, g)
+    out = g['__alohadb_main__']() if wrapped else g.get('_result')
+    return json.dumps(out)
+except Exception as e:
+    # Report only the user's own frames, not the runner's internals.
+    frames = [f for f in traceback.extract_tb(e.__traceback__)
+              if f.filename == '<pg_python>']
+    msg = ''.join(traceback.format_list(frames)) + \
+          ''.join(traceback.format_exception_only(type(e), e))
+    raise Exception('Python error:\n' + msg.rstrip()) from None
+$$;
+
+-- -------------------------------------------------------------------------
+-- python_eval: evaluate ad-hoc Python code with execution logging.
+-- -------------------------------------------------------------------------
+CREATE FUNCTION python_eval(
+    p_code text,
+    p_args jsonb DEFAULT '{}'
+)
+RETURNS jsonb
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    raw_result  text;
+    v_result    jsonb;
+    started     timestamptz := clock_timestamp();
+    v_exec_id   bigint;
+BEGIN
+    INSERT INTO pg_python_executions (exec_mode, args)
+    VALUES ('sync', p_args)
+    RETURNING pg_python_executions.exec_id INTO v_exec_id;
+
+    BEGIN
+        raw_result := pg_python_runner(p_code, p_args::text);
+        v_result   := raw_result::jsonb;
+
+        UPDATE pg_python_executions
+        SET result       = v_result,
+            completed_at = clock_timestamp(),
+            duration_ms  = extract(epoch FROM clock_timestamp() - started) * 1000
+        WHERE pg_python_executions.exec_id = v_exec_id;
+
+    EXCEPTION WHEN OTHERS THEN
+        UPDATE pg_python_executions
+        SET error_message = SQLERRM,
+            completed_at  = clock_timestamp(),
+            duration_ms   = extract(epoch FROM clock_timestamp() - started) * 1000
+        WHERE pg_python_executions.exec_id = v_exec_id;
+        RAISE;
+    END;
+
+    RETURN v_result;
+END;
+$$;
+
+-- -------------------------------------------------------------------------
+-- python_register: add a script to the catalog (auto-increments version).
+-- -------------------------------------------------------------------------
+CREATE FUNCTION python_register(
+    p_script_name   text,
+    p_code          text,
+    p_description   text   DEFAULT NULL,
+    p_env_name      text   DEFAULT 'default',
+    p_return_type   text   DEFAULT 'jsonb'
+)
+RETURNS int  -- version number assigned
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    next_version int;
+BEGIN
+    SELECT COALESCE(MAX(version), 0) + 1
+    INTO   next_version
+    FROM   pg_python_scripts
+    WHERE  script_name = p_script_name;
+
+    INSERT INTO pg_python_scripts
+        (script_name, version, code, description, env_name, return_type)
+    VALUES
+        (p_script_name, next_version, p_code, p_description,
+         p_env_name, p_return_type);
+
+    RETURN next_version;
+END;
+$$;
+
+-- -------------------------------------------------------------------------
+-- python_exec: run a registered script by name (latest version by default).
+-- -------------------------------------------------------------------------
+CREATE FUNCTION python_exec(
+    p_script_name text,
+    p_args        jsonb DEFAULT '{}',
+    p_version     int   DEFAULT NULL   -- NULL = latest
+)
+RETURNS jsonb
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    script_code text;
+    script_ver  int;
+    raw_result  text;
+    v_result    jsonb;
+    started     timestamptz := clock_timestamp();
+    v_exec_id   bigint;
+BEGIN
+    SELECT code, version
+    INTO   script_code, script_ver
+    FROM   pg_python_scripts
+    WHERE  script_name = p_script_name
+      AND  (p_version IS NULL OR version = p_version)
+    ORDER BY version DESC
+    LIMIT  1;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'pg_python: script "%" not found', p_script_name;
+    END IF;
+
+    INSERT INTO pg_python_executions
+        (script_name, script_version, exec_mode, args)
+    VALUES
+        (p_script_name, script_ver, 'sync', p_args)
+    RETURNING pg_python_executions.exec_id INTO v_exec_id;
+
+    BEGIN
+        raw_result := pg_python_runner(script_code, p_args::text);
+        v_result   := raw_result::jsonb;
+
+        UPDATE pg_python_executions
+        SET result       = v_result,
+            completed_at = clock_timestamp(),
+            duration_ms  = extract(epoch FROM clock_timestamp() - started) * 1000
+        WHERE pg_python_executions.exec_id = v_exec_id;
+
+    EXCEPTION WHEN OTHERS THEN
+        UPDATE pg_python_executions
+        SET error_message = SQLERRM,
+            completed_at  = clock_timestamp(),
+            duration_ms   = extract(epoch FROM clock_timestamp() - started) * 1000
+        WHERE pg_python_executions.exec_id = v_exec_id;
+        RAISE;
+    END;
+
+    RETURN v_result;
+END;
+$$;
+
+-- Register a Python environment profile (metadata; no package installation)
+CREATE FUNCTION python_env_register(
+    p_env_name       text,
+    p_packages       text[]  DEFAULT '{}',
+    p_python_version text    DEFAULT '3',
+    p_description    text    DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql VOLATILE
+AS $$
+BEGIN
+    INSERT INTO pg_python_envs
+        (env_name, python_version, packages, description)
+    VALUES
+        (p_env_name, p_python_version, p_packages, p_description)
+    ON CONFLICT (env_name)
+    DO UPDATE SET
+        python_version = EXCLUDED.python_version,
+        packages       = EXCLUDED.packages,
+        description    = EXCLUDED.description;
+END;
+$$;
+
+-- List all registered scripts (one row per script, latest version)
+CREATE FUNCTION python_list(p_env_name text DEFAULT NULL)
+RETURNS TABLE(
+    script_name text,
+    version     int,
+    description text,
+    env_name    text,
+    return_type text,
+    created_by  text,
+    updated_at  timestamptz
+)
+LANGUAGE sql STABLE
+AS $$
+    SELECT DISTINCT ON (script_name)
+        script_name, version, description, env_name,
+        return_type, created_by, updated_at
+    FROM   pg_python_scripts
+    WHERE  p_env_name IS NULL OR env_name = p_env_name
+    ORDER BY script_name, version DESC;
+$$;
+
+-- Get the source code of a registered script
+CREATE FUNCTION python_get(
+    p_script_name text,
+    p_version     int DEFAULT NULL
+)
+RETURNS text
+LANGUAGE sql STABLE
+AS $$
+    SELECT code
+    FROM   pg_python_scripts
+    WHERE  script_name = p_script_name
+      AND  (p_version IS NULL OR version = p_version)
+    ORDER BY version DESC
+    LIMIT  1;
+$$;
+
+-- Execution history
+CREATE FUNCTION python_history(
+    p_script_name text DEFAULT NULL,
+    p_limit       int  DEFAULT 50
+)
+RETURNS TABLE(
+    exec_id       bigint,
+    script_name   text,
+    script_version int,
+    args          jsonb,
+    result        jsonb,
+    error_message text,
+    duration_ms   float8,
+    executed_by   text,
+    started_at    timestamptz
+)
+LANGUAGE sql STABLE
+AS $$
+    SELECT exec_id, script_name, script_version, args, result,
+           error_message, duration_ms, executed_by, started_at
+    FROM   pg_python_executions
+    WHERE  p_script_name IS NULL OR script_name = p_script_name
+    ORDER BY started_at DESC
+    LIMIT  p_limit;
+$$;
+
+-- Summary statistics
+CREATE FUNCTION python_stats(
+    OUT registered_scripts bigint,
+    OUT total_executions   bigint,
+    OUT failed_executions  bigint,
+    OUT avg_duration_ms    float8
+)
+RETURNS record
+LANGUAGE sql STABLE
+AS $$
+    SELECT
+        (SELECT count(DISTINCT script_name) FROM pg_python_scripts),
+        (SELECT count(*)  FROM pg_python_executions),
+        (SELECT count(*)  FROM pg_python_executions
+         WHERE  error_message IS NOT NULL),
+        (SELECT avg(duration_ms) FROM pg_python_executions
+         WHERE  duration_ms IS NOT NULL);
+$$;

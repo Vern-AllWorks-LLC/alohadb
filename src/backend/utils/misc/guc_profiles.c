@@ -323,7 +323,7 @@ SetGUCFromProfile(const char *name, const char *value)
  *
  *		This function can be called at postmaster startup (from
  *		PostmasterMain) or at runtime via the SQL function
- *		alohadb_apply_profile().
+ *		pg_apply_profile().
  */
 void
 ApplyProfile(const char *profile_name)
@@ -562,12 +562,12 @@ assign_profile(const char *newval, void *extra)
  */
 
 /*
- * alohadb_apply_profile(text) RETURNS void
+ * pg_apply_profile(text) RETURNS void
  *
  * Manually apply a configuration profile.  Requires superuser.
  */
 Datum
-alohadb_apply_profile(PG_FUNCTION_ARGS)
+pg_apply_profile(PG_FUNCTION_ARGS)
 {
 	text	   *profile_text;
 	char	   *profile_name;
@@ -598,12 +598,12 @@ alohadb_apply_profile(PG_FUNCTION_ARGS)
 }
 
 /*
- * alohadb_detect_hardware() RETURNS TABLE(component text, value text)
+ * pg_detect_hardware() RETURNS TABLE(component text, value text)
  *
  * Returns detected hardware information as a set of (component, value) rows.
  */
 Datum
-alohadb_detect_hardware(PG_FUNCTION_ARGS)
+pg_detect_hardware(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
 	HardwareInfo   *hw;

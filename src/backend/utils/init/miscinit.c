@@ -57,7 +57,7 @@
 #include "utils/varlena.h"
 
 
-#define DIRECTORY_LOCK_FILE		"alohadb.pid"
+#define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
 ProcessingMode Mode = InitProcessing;
 

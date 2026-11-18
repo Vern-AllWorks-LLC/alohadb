@@ -52,9 +52,9 @@
 #include "utils/timestamp.h"
 
 
-#define CONFIG_FILENAME "alohadb.conf"
-#define HBA_FILENAME	"al_hba.conf"
-#define IDENT_FILENAME	"al_ident.conf"
+#define CONFIG_FILENAME "postgresql.conf"
+#define HBA_FILENAME	"pg_hba.conf"
+#define IDENT_FILENAME	"pg_ident.conf"
 
 #ifdef EXEC_BACKEND
 #define CONFIG_EXEC_PARAMS "global/config_exec_params"

@@ -6,11 +6,11 @@ pg_config_sources = files(
 
 if host_system == 'windows'
   pg_config_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_config',
-    '--FILEDESC', 'al_config - report configuration information',])
+    '--NAME', 'pg_config',
+    '--FILEDESC', 'pg_config - report configuration information',])
 endif
 
-pg_config = executable('al_config',
+pg_config = executable('pg_config',
   pg_config_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,

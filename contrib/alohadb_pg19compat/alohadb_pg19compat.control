@@ -1,6 +1,0 @@
-# alohadb_pg19compat extension
-comment = 'AlohaDB backports of self-contained PostgreSQL 19 SQL functions and casts'
-default_version = '1.0'
-relocatable = false
-schema = pg_catalog
-superuser = true

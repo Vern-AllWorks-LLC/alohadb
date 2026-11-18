@@ -1,5 +1,0 @@
-# alohadb_graph extension
-comment = 'Property graphs over ordinary tables: enforced schema, temporal/as-of traversal, graph algorithms, GNN sampling'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_graph'
-relocatable = false

@@ -8,7 +8,7 @@
 
 project('alohadb',
   ['c'],
-  version: '20.3',
+  version: '21.0',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for
@@ -487,7 +487,7 @@ endif
 # append "postgresql" to some of them, if the string does not already
 # contain "pgsql" or "postgres", in order to avoid directory clutter.
 
-pkg = 'alohadb'
+pkg = 'postgresql'
 
 dir_prefix = get_option('prefix')
 

@@ -107,7 +107,7 @@ astreamer_recovery_injector_content(astreamer *streamer,
 				mystreamer->skip_file =
 					(strcmp(member->pathname, "standby.signal") == 0);
 				mystreamer->is_postgresql_auto_conf =
-					(strcmp(member->pathname, "alohadb.auto.conf") == 0);
+					(strcmp(member->pathname, "postgresql.auto.conf") == 0);
 				if (mystreamer->is_postgresql_auto_conf)
 				{
 					/* Remember we saw it so we don't add it again. */
@@ -164,7 +164,7 @@ astreamer_recovery_injector_content(astreamer *streamer,
 				 */
 				if (!mystreamer->found_postgresql_auto_conf)
 					astreamer_inject_file(mystreamer->base.bbs_next,
-										  "alohadb.auto.conf",
+										  "postgresql.auto.conf",
 										  mystreamer->recoveryconfcontents->data,
 										  mystreamer->recoveryconfcontents->len);
 

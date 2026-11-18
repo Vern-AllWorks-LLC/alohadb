@@ -1,0 +1,255 @@
+-- pg_alohadb_convert_db.sql
+--
+-- AlohaDB 21 renamed its extensions from alohadb_<name> to pg_<name>.  A few
+-- got distinct names because pg_<name> belongs to a well-known third-party
+-- extension: alohadb_cron -> pg_cronjobs, alohadb_search -> pg_ftsearch,
+-- alohadb_graphql -> pg_gql, alohadb_jsonschema -> pg_json_schema,
+-- alohadb_analytics -> pg_contagg, alohadb_parquet -> pg_parquetio,
+-- alohadb_timeseries -> pg_tsmanage, alohadb_vectorize -> pg_vecexec, and
+-- alohadb_pg19compat -> pg_compat19.  Their alohadb_* functions, tables and
+-- settings were renamed to the new prefixes.
+--
+-- After upgrading a cluster from AlohaDB 20.x with pg_upgrade, run this
+-- script as a superuser in every database that has alohadb_* extensions.
+-- pg_alohadb_convert_db does that for all databases; by hand:
+--
+--     psql -d DBNAME -f "$(pg_config --sharedir)/pg_alohadb_convert_db.sql"
+--
+-- It renames the extensions and their member objects in place (data is
+-- kept), points their C functions at the new libraries, rewrites function
+-- bodies, comments, per-database/per-role settings and pg_cronjobs job
+-- commands that use the old names, then updates the extensions to their
+-- current versions.  Running it again is harmless.
+--
+-- Settings in postgresql.conf / postgresql.auto.conf (for example
+-- shared_preload_libraries and alohadb.audit_enabled) are converted by
+-- "pg_alohadb_convert_db -D DATADIR"; old library names in
+-- shared_preload_libraries keep working until then.
+--
+-- Generated from rename_map.json by generate.py -- do not edit.
+
+\set ON_ERROR_STOP on
+SET client_min_messages = notice;
+BEGIN;
+
+CREATE TEMP TABLE alohadb_ext_map (old text PRIMARY KEY, new text NOT NULL);
+INSERT INTO alohadb_ext_map VALUES
+@EXTS@;
+
+CREATE TEMP TABLE alohadb_name_map (old text PRIMARY KEY, new text NOT NULL);
+INSERT INTO alohadb_name_map VALUES
+@TOKENS@;
+
+CREATE TEMP TABLE alohadb_guc_map (old text PRIMARY KEY, new text NOT NULL);
+INSERT INTO alohadb_guc_map VALUES
+@GUCS@;
+
+-- An identifier: exact match, else the longest mapped prefix followed by
+-- "_" (covers generated names such as alohadb_branches_pkey).
+CREATE FUNCTION pg_temp.alohadb_ident(n text) RETURNS text
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce(
+        (SELECT new FROM alohadb_name_map WHERE old = n),
+        (SELECT new FROM alohadb_ext_map WHERE old = n),
+        (SELECT m.new || substr(n, length(m.old) + 1)
+           FROM (SELECT old, new FROM alohadb_name_map
+                 UNION ALL SELECT old, new FROM alohadb_ext_map) m
+          WHERE n LIKE replace(m.old, '_', '\_') || '\_%'
+          ORDER BY length(m.old) DESC LIMIT 1),
+        n)
+$$;
+
+-- Free text (function bodies, comments, job commands): replace each
+-- alohadb_* identifier that alohadb_ident() knows and each old setting name.
+CREATE FUNCTION pg_temp.alohadb_text(s text) RETURNS text
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    r record;
+    tok text;
+BEGIN
+    IF s IS NULL OR s !~ 'alohadb' THEN
+        RETURN s;
+    END IF;
+    FOR r IN SELECT old, new FROM alohadb_guc_map ORDER BY length(old) DESC LOOP
+        s := regexp_replace(s, '(?<![A-Za-z0-9_$])' || replace(r.old, '.', '\.') || '(?![a-z0-9_])', r.new, 'g');
+    END LOOP;
+    FOR tok IN
+        SELECT DISTINCT m[1]
+        FROM regexp_matches(s, '(?<![A-Za-z0-9_$])(alohadb_[a-z0-9_]+)', 'g') AS m
+        ORDER BY 1 DESC
+    LOOP
+        IF pg_temp.alohadb_ident(tok) <> tok THEN
+            s := regexp_replace(s, '(?<![A-Za-z0-9_$])' || tok || '(?![a-z0-9_])',
+                                pg_temp.alohadb_ident(tok), 'g');
+        END IF;
+    END LOOP;
+    RETURN s;
+END
+$$;
+
+DO $migrate$
+DECLARE
+    e record;
+    o record;
+    cmd text;
+BEGIN
+    IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+        RAISE EXCEPTION 'pg_alohadb_convert_db.sql must be run by a superuser';
+    END IF;
+
+    FOR e IN
+        SELECT x.oid, x.extname, m.new
+        FROM pg_extension x JOIN alohadb_ext_map m ON m.old = x.extname
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = e.new) THEN
+            RAISE EXCEPTION 'both % and % are installed', e.extname, e.new;
+        END IF;
+        RAISE NOTICE 'renaming extension % to %', e.extname, e.new;
+
+        -- member relations: constraints, indexes, triggers, policies and
+        -- columns first, then the relation itself
+        FOR o IN
+            SELECT c.oid, c.relname, c.relkind
+            FROM pg_depend d JOIN pg_class c ON c.oid = d.objid
+            WHERE d.classid = 'pg_class'::regclass
+              AND d.refclassid = 'pg_extension'::regclass
+              AND d.refobjid = e.oid AND d.deptype = 'e'
+        LOOP
+            FOR cmd IN
+                SELECT format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I',
+                              o.oid::regclass, conname, pg_temp.alohadb_ident(conname))
+                FROM pg_constraint
+                WHERE conrelid = o.oid AND conname LIKE 'alohadb\_%'
+            LOOP
+                EXECUTE cmd;
+            END LOOP;
+            FOR cmd IN
+                SELECT format('ALTER INDEX %s RENAME TO %I',
+                              i.indexrelid::regclass, pg_temp.alohadb_ident(ic.relname))
+                FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid
+                WHERE i.indrelid = o.oid AND ic.relname LIKE 'alohadb\_%'
+            LOOP
+                EXECUTE cmd;
+            END LOOP;
+            FOR cmd IN
+                SELECT format('ALTER TRIGGER %I ON %s RENAME TO %I',
+                              tgname, o.oid::regclass, pg_temp.alohadb_ident(tgname))
+                FROM pg_trigger
+                WHERE tgrelid = o.oid AND NOT tgisinternal AND tgname LIKE 'alohadb\_%'
+            LOOP
+                EXECUTE cmd;
+            END LOOP;
+            FOR cmd IN
+                SELECT format('ALTER POLICY %I ON %s RENAME TO %I',
+                              polname, o.oid::regclass, pg_temp.alohadb_ident(polname))
+                FROM pg_policy
+                WHERE polrelid = o.oid AND polname LIKE 'alohadb\_%'
+            LOOP
+                EXECUTE cmd;
+            END LOOP;
+            IF o.relkind IN ('r', 'p', 'v', 'm', 'f') THEN
+                FOR cmd IN
+                    SELECT format('ALTER TABLE %s RENAME COLUMN %I TO %I',
+                                  o.oid::regclass, attname, pg_temp.alohadb_ident(attname))
+                    FROM pg_attribute
+                    WHERE attrelid = o.oid AND attnum > 0 AND NOT attisdropped
+                      AND attname LIKE 'alohadb\_%'
+                LOOP
+                    EXECUTE cmd;
+                END LOOP;
+            END IF;
+            IF pg_temp.alohadb_ident(o.relname) <> o.relname THEN
+                EXECUTE format('ALTER %s %s RENAME TO %I',
+                               CASE o.relkind
+                                   WHEN 'v' THEN 'VIEW'
+                                   WHEN 'm' THEN 'MATERIALIZED VIEW'
+                                   WHEN 'S' THEN 'SEQUENCE'
+                                   WHEN 'f' THEN 'FOREIGN TABLE'
+                                   ELSE 'TABLE' END,
+                               o.oid::regclass, pg_temp.alohadb_ident(o.relname));
+            END IF;
+        END LOOP;
+
+        -- member types
+        FOR o IN
+            SELECT t.oid, t.typname
+            FROM pg_depend d JOIN pg_type t ON t.oid = d.objid
+            WHERE d.classid = 'pg_type'::regclass
+              AND d.refclassid = 'pg_extension'::regclass
+              AND d.refobjid = e.oid AND d.deptype = 'e'
+        LOOP
+            IF pg_temp.alohadb_ident(o.typname) <> o.typname THEN
+                EXECUTE format('ALTER TYPE %s RENAME TO %I',
+                               o.oid::regtype, pg_temp.alohadb_ident(o.typname));
+            END IF;
+        END LOOP;
+
+        -- member functions: name, then library, C symbol or body
+        FOR o IN
+            SELECT p.oid, p.proname
+            FROM pg_depend d JOIN pg_proc p ON p.oid = d.objid
+            WHERE d.classid = 'pg_proc'::regclass
+              AND d.refclassid = 'pg_extension'::regclass
+              AND d.refobjid = e.oid AND d.deptype = 'e'
+        LOOP
+            IF pg_temp.alohadb_ident(o.proname) <> o.proname THEN
+                EXECUTE format('ALTER ROUTINE %s RENAME TO %I',
+                               o.oid::regprocedure, pg_temp.alohadb_ident(o.proname));
+            END IF;
+            UPDATE pg_proc
+               SET prosrc = pg_temp.alohadb_text(prosrc),
+                   probin = pg_temp.alohadb_text(probin)
+             WHERE oid = o.oid AND (prosrc ~ 'alohadb' OR probin ~ 'alohadb');
+        END LOOP;
+
+        -- comments on the extension, its members and their columns
+        UPDATE pg_description ds
+           SET description = pg_temp.alohadb_text(ds.description)
+          FROM pg_depend d
+         WHERE d.refclassid = 'pg_extension'::regclass AND d.refobjid = e.oid
+           AND d.deptype = 'e'
+           AND ds.classoid = d.classid AND ds.objoid = d.objid
+           AND ds.description ~ 'alohadb';
+        UPDATE pg_description ds
+           SET description = pg_temp.alohadb_text(ds.description)
+         WHERE ds.classoid = 'pg_extension'::regclass AND ds.objoid = e.oid;
+
+        UPDATE pg_extension SET extname = e.new WHERE oid = e.oid;
+    END LOOP;
+
+    -- roles created by the extensions
+    FOR o IN
+        SELECT r.rolname FROM pg_roles r JOIN alohadb_name_map m ON m.old = r.rolname
+    LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_roles
+                       WHERE rolname = pg_temp.alohadb_ident(o.rolname)) THEN
+            EXECUTE format('ALTER ROLE %I RENAME TO %I',
+                           o.rolname, pg_temp.alohadb_ident(o.rolname));
+        END IF;
+    END LOOP;
+
+    -- ALTER DATABASE / ALTER ROLE ... SET of renamed settings
+    UPDATE pg_db_role_setting s
+       SET setconfig = (SELECT array_agg(pg_temp.alohadb_text(c) ORDER BY n)
+                          FROM unnest(s.setconfig) WITH ORDINALITY AS u(c, n))
+     WHERE array_to_string(s.setconfig, ' ') ~ 'alohadb';
+
+    -- scheduled jobs that call renamed functions
+    IF to_regclass('pg_cronjobs_jobs') IS NOT NULL THEN
+        EXECUTE 'UPDATE pg_cronjobs_jobs SET command = pg_temp.alohadb_text(command) '
+                'WHERE command ~ ''alohadb''';
+    END IF;
+
+    -- bring the renamed extensions up to date (e.g. pg_cache 1.0 -> 2.0)
+    FOR e IN
+        SELECT x.extname FROM pg_extension x
+        JOIN pg_available_extensions a ON a.name = x.extname
+        WHERE x.extname IN (SELECT new FROM alohadb_ext_map)
+          AND a.default_version IS DISTINCT FROM x.extversion
+    LOOP
+        EXECUTE format('ALTER EXTENSION %I UPDATE', e.extname);
+    END LOOP;
+END
+$migrate$;
+
+COMMIT;

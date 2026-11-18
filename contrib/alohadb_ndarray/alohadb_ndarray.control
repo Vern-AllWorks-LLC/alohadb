@@ -1,5 +1,0 @@
-# alohadb_ndarray extension
-comment = 'Chunked, compressed, sliceable N-dimensional arrays with server-side math'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_ndarray'
-relocatable = false

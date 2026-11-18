@@ -6,11 +6,11 @@ pg_walsummary_sources = files(
 
 if host_system == 'windows'
   pg_walsummary_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_walsummary',
-    '--FILEDESC', 'al_walsummary - print contents of WAL summary files',])
+    '--NAME', 'pg_walsummary',
+    '--FILEDESC', 'pg_walsummary - print contents of WAL summary files',])
 endif
 
-pg_walsummary = executable('al_walsummary',
+pg_walsummary = executable('pg_walsummary',
   pg_walsummary_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,

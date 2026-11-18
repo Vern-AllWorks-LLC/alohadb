@@ -1,0 +1,5 @@
+comment = 'AlohaDB ObjectStore - S3, GCS, and Azure Blob cloud storage reader and writer'
+default_version = '1.0'
+module_pathname = '$libdir/pg_objectstore'
+schema = public
+relocatable = false

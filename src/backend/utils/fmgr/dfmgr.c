@@ -72,6 +72,7 @@ static void *internal_load_library(const char *libname);
 pg_noreturn static void incompatible_module_error(const char *libname,
 												  const Pg_abi_values *module_magic_data);
 static char *expand_dynamic_library_name(const char *name);
+static void *lookup_symbol(void *handle, const char *funcname);
 static void check_restricted_library_name(const char *name);
 
 /* ABI values that module needs to match to be accepted */
@@ -125,7 +126,7 @@ load_external_function(const char *filename, const char *funcname,
 		*filehandle = lib_handle;
 
 	/* Look up the function within the library. */
-	retval = dlsym(lib_handle, funcname);
+	retval = lookup_symbol(lib_handle, funcname);
 
 	if (retval == NULL && signalNotFound)
 		ereport(ERROR,
@@ -170,7 +171,7 @@ load_file(const char *filename, bool restricted)
 void *
 lookup_external_function(void *filehandle, const char *funcname)
 {
-	return dlsym(filehandle, funcname);
+	return lookup_symbol(filehandle, funcname);
 }
 
 
@@ -463,7 +464,7 @@ get_loaded_module_details(DynamicFileList *dfptr,
  * The result will always be freshly palloc'd.
  */
 static char *
-expand_dynamic_library_name(const char *name)
+expand_dynamic_library_name_internal(const char *name)
 {
 	bool		have_slash;
 	char	   *new;
@@ -505,11 +506,101 @@ expand_dynamic_library_name(const char *name)
 		pfree(full);
 	}
 
+	return NULL;
+}
+
+/*
+ * AlohaDB releases before 21.0 shipped their extensions as alohadb_<name>;
+ * they are now pg_<name>, except for a few whose pg_<name> belongs to a
+ * well-known third-party extension.  Catalogs, replication slots and
+ * configuration files written by those releases still name the old
+ * libraries and C symbols, so when an old name is not found, retry with the
+ * new one.  "name + off" is where the identifier starts inside the string.
+ */
+static char *
+legacy_alohadb_rename(const char *name, size_t off)
+{
+	static const char *const renamed[][2] = {
+		{"alohadb_analytics", "pg_contagg"},
+		{"alohadb_cron", "pg_cronjobs"},
+		{"alohadb_graphql", "pg_gql"},
+		{"alohadb_jsonschema", "pg_json_schema"},
+		{"alohadb_parquet", "pg_parquetio"},
+		{"alohadb_search", "pg_ftsearch"},
+		{"alohadb_timeseries", "pg_tsmanage"},
+		{"alohadb_vectorize", "pg_vecexec"},
+	};
+	const char *id = name + off;
+
+	if (strncmp(id, "alohadb_", 8) != 0)
+		return NULL;
+	for (int i = 0; i < lengthof(renamed); i++)
+	{
+		size_t		len = strlen(renamed[i][0]);
+
+		if (strncmp(id, renamed[i][0], len) == 0 &&
+			(id[len] == '\0' || id[len] == '_' || id[len] == '.'))
+			return psprintf("%.*s%s%s", (int) off, name, renamed[i][1],
+							id + len);
+	}
+	return psprintf("%.*spg_%s", (int) off, name, id + 8);
+}
+
+static char *
+legacy_alohadb_name(const char *name)
+{
+	const char *base = last_dir_separator(name);
+
+	return legacy_alohadb_rename(name, base ? (size_t) (base + 1 - name) : 0);
+}
+
+static char *
+expand_dynamic_library_name(const char *name)
+{
+	char	   *full;
+	char	   *legacy;
+
+	full = expand_dynamic_library_name_internal(name);
+	if (full)
+		return full;
+
+	legacy = legacy_alohadb_name(name);
+	if (legacy)
+	{
+		full = expand_dynamic_library_name_internal(legacy);
+		pfree(legacy);
+		if (full)
+			return full;
+	}
+
 	/*
 	 * If we can't find the file, just return the string as-is. The ensuing
 	 * load attempt will fail and report a suitable message.
 	 */
 	return pstrdup(name);
+}
+
+/* dlsym() with the same legacy alohadb_ -> pg_ fallback for C symbols */
+static void *
+lookup_symbol(void *handle, const char *funcname)
+{
+	void	   *retval = dlsym(handle, funcname);
+	size_t		off = 0;
+
+	/* also covers the "pg_finfo_" info record that fmgr looks up */
+	if (strncmp(funcname, "pg_finfo_", 9) == 0)
+		off = 9;
+	if (retval == NULL)
+	{
+		char	   *legacy = legacy_alohadb_rename(funcname, off);
+
+		if (legacy)
+		{
+			retval = dlsym(handle, legacy);
+			pfree(legacy);
+		}
+	}
+	return retval;
 }
 
 /*

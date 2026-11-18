@@ -28,20 +28,22 @@ SUBDIRS = \
 		lo		\
 		ltree		\
 		oid2name	\
-		alohadb_approx	\
-		alohadb_branch	\
-		alohadb_cdc_arrow \
-		alohadb_gpu	\
-		alohadb_inference \
-		alohadb_learned_stats \
-		alohadb_tiering \
-		alohadb_bitemporal \
-		alohadb_embeddings \
-		alohadb_graph \
-		alohadb_lineage \
-		alohadb_measure \
-		alohadb_temporal \
-		alohadb_tsfunc \
+		pg_approx	\
+		pg_branch	\
+		pg_cdc_arrow \
+		pg_gpu	\
+		pg_inference \
+		pg_learned_stats \
+		pg_tiering \
+		pg_bitemporal \
+		pg_embeddings \
+		pg_graph \
+		pg_lineage \
+		pg_measure \
+		pg_temporal \
+		pg_tsfunc \
+		pg_cache \
+		pg_kv \
 		pageinspect	\
 		passwordcheck	\
 		pg_buffercache	\
@@ -80,9 +82,9 @@ ALWAYS_SUBDIRS += uuid-ossp
 endif
 
 ifeq ($(with_zstd),yes)
-SUBDIRS += alohadb_ndarray
+SUBDIRS += pg_ndarray
 else
-ALWAYS_SUBDIRS += alohadb_ndarray
+ALWAYS_SUBDIRS += pg_ndarray
 endif
 
 ifeq ($(with_libxml),yes)
@@ -92,9 +94,9 @@ ALWAYS_SUBDIRS += xml2
 endif
 
 ifeq ($(with_libcurl),yes)
-SUBDIRS += alohadb_federated alohadb_nl2sql
+SUBDIRS += pg_federated pg_nl2sql
 else
-ALWAYS_SUBDIRS += alohadb_federated alohadb_nl2sql
+ALWAYS_SUBDIRS += pg_federated pg_nl2sql
 endif
 
 ifeq ($(with_selinux),yes)

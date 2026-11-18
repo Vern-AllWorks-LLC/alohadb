@@ -1,0 +1,220 @@
+-- pg_nosql regression test: filter translation (doc_search / doc_count /
+-- doc_patch / doc_remove share nosql_filter_to_where)
+CREATE EXTENSION pg_nosql;
+SELECT doc_create_collection('users') IS NOT NULL AS created;
+ created 
+---------
+ t
+(1 row)
+
+SELECT count(*) FROM (
+  SELECT doc_insert('users', d) FROM unnest(ARRAY[
+    '{"name":"Kai","city":"Hilo","age":31,"tags":["a","b"],"vip":true}',
+    '{"name":"Lani","city":"Kona","age":25,"tags":["b"],"vip":false}',
+    '{"name":"Makoa","city":"Hilo","age":42,"tags":["c"],"note":null}',
+    '{"name":"O''Neil","city":"Lihue","age":19,"tags":[]}'
+  ]::jsonb[]) d) s;
+ count 
+-------
+     4
+(1 row)
+
+-- Scalar string equality (used to fail: 'Hilo'::jsonb is not valid JSON)
+SELECT d->>'name' AS name FROM doc_search('users', '{"city":"Hilo"}') AS d ORDER BY 1;
+ name  
+-------
+ Kai
+ Makoa
+(2 rows)
+
+-- Numbers, booleans, null
+SELECT d->>'name' AS name FROM doc_search('users', '{"age":25}') AS d;
+ name 
+------
+ Lani
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"vip":true}') AS d;
+ name 
+------
+ Kai
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"note":null}') AS d;
+ name  
+-------
+ Makoa
+(1 row)
+
+-- Quotes in values
+SELECT d->>'name' AS name FROM doc_search('users', '{"name":"O''Neil"}') AS d;
+  name  
+--------
+ O'Neil
+(1 row)
+
+-- Several keys are ANDed
+SELECT d->>'name' AS name FROM doc_search('users', '{"city":"Hilo","age":42}') AS d;
+ name  
+-------
+ Makoa
+(1 row)
+
+-- Array value is containment (used to match EVERY row)
+SELECT d->>'name' AS name FROM doc_search('users', '{"tags":["b"]}') AS d ORDER BY 1;
+ name 
+------
+ Kai
+ Lani
+(2 rows)
+
+SELECT count(*) FROM doc_search('users', '{"tags":["zzz"]}');
+ count 
+-------
+     0
+(1 row)
+
+-- Operator objects
+SELECT d->>'name' AS name FROM doc_search('users', '{"age":{"gte":25,"lt":42}}') AS d ORDER BY 1;
+ name 
+------
+ Kai
+ Lani
+(2 rows)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"city":{"in":["Kona","Lihue"]}}') AS d ORDER BY 1;
+  name  
+--------
+ Lani
+ O'Neil
+(2 rows)
+
+SELECT count(*) FROM doc_search('users', '{"city":{"in":[]}}');
+ count 
+-------
+     0
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"tags":{"contains":"c"}}') AS d;
+ name  
+-------
+ Makoa
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"note":{"exists":true}}') AS d;
+ name  
+-------
+ Makoa
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"name":{"like":"%a%"}}') AS d ORDER BY 1;
+ name  
+-------
+ Kai
+ Lani
+ Makoa
+(3 rows)
+
+SELECT doc_search('users', '{"age":{"between":[1,2]}}');   -- error
+ERROR:  pg_nosql: operator "between" does not take an array
+SELECT doc_search('users', '{"age":{"bogus":1}}');         -- error
+ERROR:  pg_nosql: unknown filter operator "bogus"
+-- Field names are quoted, not spliced into SQL
+SELECT count(*) FROM doc_search('users', '{"x'') OR (true":"y"}');
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM doc_search('users', '{"x'' OR ''1''=''1":{"eq":"z"}}');
+ count 
+-------
+     0
+(1 row)
+
+-- Options: sort, projection, limit/offset (field names quoted)
+SELECT d FROM doc_search('users', '{}', '{"sort":{"age":"desc"},"limit":2,"fields":["name","age"]}') AS d;
+              d               
+------------------------------
+ {"age": 42, "name": "Makoa"}
+ {"age": 31, "name": "Kai"}
+(2 rows)
+
+SELECT count(*) FROM doc_search('users', '{}', '{"sort":{"name''; DROP TABLE users; --":"asc"},"limit":1,"fields":["name"]}');
+ count 
+-------
+     1
+(1 row)
+
+SELECT doc_count('users');
+ doc_count 
+-----------
+         4
+(1 row)
+
+-- Counting / patching / removing with an array filter only touches matches
+SELECT doc_count('users', '{"tags":["b"]}');
+ doc_count 
+-----------
+         2
+(1 row)
+
+SELECT doc_patch('users', '{"tags":["c"]}', '{"vip":true}');
+           doc_patch           
+-------------------------------
+ {"matched": 1, "modified": 1}
+(1 row)
+
+SELECT d->>'name' AS name FROM doc_search('users', '{"vip":true}') AS d ORDER BY 1;
+ name  
+-------
+ Kai
+ Makoa
+(2 rows)
+
+SELECT doc_remove('users', '{"tags":["c"]}');
+   doc_remove   
+----------------
+ {"deleted": 1}
+(1 row)
+
+SELECT doc_count('users');
+ doc_count 
+-----------
+         3
+(1 row)
+
+SELECT doc_drop_collection('users');
+ doc_drop_collection 
+---------------------
+ 
+(1 row)
+
+-- Sorting is numeric for numbers (text ordering would give 100, 25, 9)
+SELECT doc_create_collection('nums') IS NOT NULL AS created;
+ created 
+---------
+ t
+(1 row)
+
+SELECT count(*) FROM (SELECT doc_insert('nums', jsonb_build_object('n', v)) FROM unnest(ARRAY[25, 9, 100]) v) s;
+ count 
+-------
+     3
+(1 row)
+
+SELECT d->'n' AS n FROM doc_search('nums', '{}', '{"sort":{"n":"asc"}}') AS d;
+  n  
+-----
+ 9
+ 25
+ 100
+(3 rows)
+
+SELECT doc_drop_collection('nums');
+ doc_drop_collection 
+---------------------
+ 
+(1 row)
+
+DROP EXTENSION pg_nosql;

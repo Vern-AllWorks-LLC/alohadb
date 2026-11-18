@@ -1,6 +1,0 @@
-# alohadb_embeddings extension
-comment = 'AlohaDB Embeddings - embedding model registry, tracked re-embedding, and hybrid vector + full-text retrieval'
-default_version = '1.0'
-relocatable = false
-schema = public
-superuser = false

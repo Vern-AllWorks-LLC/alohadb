@@ -1,0 +1,765 @@
+--
+-- pg_embeddings regression test
+--
+CREATE EXTENSION pg_embeddings;
+SET client_min_messages = warning;
+-- Deterministic fake embedders.
+-- v1: 4 dims = 0.1 + occurrences of 'cat', 'dog', 'car', 'bike'.
+CREATE FUNCTION occ(t text, w text) RETURNS real
+LANGUAGE sql IMMUTABLE STRICT AS
+$$ SELECT ((length(lower(t)) - length(replace(lower(t), w, ''))) / length(w))::real $$;
+CREATE FUNCTION fake_embed_v1(t text) RETURNS vector
+LANGUAGE sql IMMUTABLE STRICT AS
+$$ SELECT array_to_vector(ARRAY[0.1 + occ(t, 'cat'), 0.1 + occ(t, 'dog'),
+                                0.1 + occ(t, 'car'), 0.1 + occ(t, 'bike')]::real[]) $$;
+-- v2 (batch form): 3 dims = [animals, vehicles, 1].
+CREATE FUNCTION fake_embed_v2(t text[]) RETURNS vector[]
+LANGUAGE sql IMMUTABLE STRICT AS
+$$ SELECT array_agg(array_to_vector(ARRAY[occ(x, 'cat') + occ(x, 'dog'),
+                                          occ(x, 'car') + occ(x, 'bike'), 1]::real[])
+                    ORDER BY o)
+     FROM unnest(t) WITH ORDINALITY AS u(x, o) $$;
+-- broken: claims 4 dims but returns 3
+CREATE FUNCTION broken_embed(t text) RETURNS vector
+LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT '[1,2,3]'::vector $$;
+CREATE FUNCTION wrong_sig(t int) RETURNS vector
+LANGUAGE sql AS $$ SELECT '[1]'::vector $$;
+------------------------------------------------------------------
+-- Model registry
+------------------------------------------------------------------
+SELECT embedding_model_register('fake', 'v1', 4, 'cosine', 'fake_embed_v1(text)',
+                                '{"note": "keyword counter"}') AS v1_id;
+ v1_id 
+-------
+     1
+(1 row)
+
+SELECT embedding_model_register('fake', 'v2', 3, 'l2', 'fake_embed_v2(text[])') AS v2_id;
+ v2_id 
+-------
+     2
+(1 row)
+
+SELECT embedding_model_register('broken', '1', 4, 'cosine', 'broken_embed(text)') AS broken_id;
+ broken_id 
+-----------
+         3
+(1 row)
+
+SELECT embedding_model_register('manual', '1', 2);                      -- no embed_fn
+ embedding_model_register 
+--------------------------
+                        4
+(1 row)
+
+SELECT embedding_model_register('fake', 'v1', 4);                       -- duplicate
+ERROR:  embedding model "fake@v1" is already registered
+CONTEXT:  PL/pgSQL function embedding_model_register(text,text,integer,text,regprocedure,jsonb) line 39 at RAISE
+SELECT embedding_model_register('a@b', '1', 4);                         -- bad name
+ERROR:  model name must not contain "@" (models are identified as name@version)
+CONTEXT:  PL/pgSQL function embedding_model_register(text,text,integer,text,regprocedure,jsonb) line 12 at RAISE
+SELECT embedding_model_register('x', '1', 4, 'hamming');                -- bad metric
+ERROR:  unknown metric "hamming" (expected cosine, l2, ip or l1)
+CONTEXT:  PL/pgSQL function embedding_model_register(text,text,integer,text,regprocedure,jsonb) line 15 at RAISE
+SELECT embedding_model_register('x', '1', 4, 'cosine', 'wrong_sig(int)'); -- bad fn
+ERROR:  embed_fn wrong_sig(integer) must be fn(text) RETURNS vector or fn(text[]) RETURNS vector[]
+CONTEXT:  PL/pgSQL function embedding_model_register(text,text,integer,text,regprocedure,jsonb) line 26 at RAISE
+SELECT model_id, model, dims, metric, embed_fn, batch, metadata, retired_at
+  FROM embedding_models();
+ model_id |  model   | dims | metric |       embed_fn        | batch |          metadata           | retired_at 
+----------+----------+------+--------+-----------------------+-------+-----------------------------+------------
+        3 | broken@1 |    4 | cosine | broken_embed(text)    | f     | {}                          | 
+        1 | fake@v1  |    4 | cosine | fake_embed_v1(text)   | f     | {"note": "keyword counter"} | 
+        2 | fake@v2  |    3 | l2     | fake_embed_v2(text[]) | t     | {}                          | 
+        4 | manual@1 |    2 | cosine |                       | f     | {}                          | 
+(4 rows)
+
+------------------------------------------------------------------
+-- Tracking
+------------------------------------------------------------------
+CREATE TABLE docs (
+    id       int PRIMARY KEY,
+    body     text,
+    category text,
+    views    int DEFAULT 0
+);
+INSERT INTO docs (id, body, category) VALUES
+    (1, 'The cat sat on the mat', 'pets'),
+    (2, 'A dog chased the cat', 'pets'),
+    (3, 'My car needs new tires', 'vehicles'),
+    (4, 'Riding a bike beats driving a car', 'vehicles'),
+    (5, 'The dog sleeps', 'pets');
+CREATE TABLE nokey (a int, b text);
+SELECT embedding_track('nokey', 'a', 'b', 'fake', 'v1');               -- no unique key
+ERROR:  key column "a" of nokey must have a single-column unique index or primary key
+CONTEXT:  PL/pgSQL function embedding_track(regclass,text,text,text,text,text) line 47 at RAISE
+SELECT embedding_track('docs', 'id', 'no_such_col', 'fake', 'v1');     -- bad expression
+ERROR:  invalid content_expr "no_such_col": column "no_such_col" does not exist
+CONTEXT:  PL/pgSQL function embedding_track(regclass,text,text,text,text,text) line 55 at RAISE
+SELECT embedding_track('docs', 'id', 'body; DROP TABLE docs', 'fake', 'v1');
+ERROR:  content_expr must be a single SQL expression (no ";" or comments)
+CONTEXT:  PL/pgSQL function embedding__check_fragment(text,text) line 7 at RAISE
+SQL statement "SELECT public.embedding__check_fragment(content_expr, 'content_expr')"
+PL/pgSQL function embedding_track(regclass,text,text,text,text,text) line 51 at PERFORM
+SELECT embedding_track('docs', 'id', 'body', 'nope', 'v1');            -- unknown model
+ERROR:  embedding model "nope@v1" is not registered
+CONTEXT:  PL/pgSQL function public.embedding__model_id(text,text) line 20 at RAISE
+PL/pgSQL function embedding_track(regclass,text,text,text,text,text) line 20 at assignment
+SELECT embedding_track('docs', 'id', 'body', 'fake', 'v1');
+ embedding_track 
+-----------------
+ docs_embeddings
+(1 row)
+
+SELECT embedding_track('docs', 'id', 'body', 'fake@v1', NULL);         -- already tracked
+ERROR:  model fake@v1 is already tracked for docs
+CONTEXT:  PL/pgSQL function embedding_track(regclass,text,text,text,text,text) line 67 at RAISE
+\d docs_embeddings
+                         Table "public.docs_embeddings"
+    Column    |           Type           | Collation | Nullable |    Default    
+--------------+--------------------------+-----------+----------+---------------
+ key          | integer                  |           | not null | 
+ model_id     | integer                  |           | not null | 
+ embedding    | vector                   |           | not null | 
+ binary_code  | bit varying              |           |          | 
+ content_hash | bytea                    |           | not null | 
+ embedded_at  | timestamp with time zone |           | not null | now()
+ status       | text                     |           | not null | 'ready'::text
+Indexes:
+    "docs_embeddings_pkey" PRIMARY KEY, btree (key, model_id)
+    "docs_embeddings_m1_hnsw_idx" hnsw ((embedding::vector(4)) vector_cosine_ops) WHERE model_id = 1
+    "docs_embeddings_model_idx" btree (model_id, key)
+Check constraints:
+    "docs_embeddings_status_check" CHECK (status = ANY (ARRAY['ready'::text, 'stale'::text]))
+Foreign-key constraints:
+    "docs_embeddings_model_id_fkey" FOREIGN KEY (model_id) REFERENCES embedding_model(model_id)
+Triggers:
+    embedding_store_check BEFORE INSERT OR UPDATE OF embedding, model_id ON docs_embeddings FOR EACH ROW EXECUTE FUNCTION embedding__store_check()
+
+SELECT model_id, key FROM embedding_queue ORDER BY id;
+ model_id | key 
+----------+-----
+        1 | 1
+        1 | 2
+        1 | 3
+        1 | 4
+        1 | 5
+(5 rows)
+
+------------------------------------------------------------------
+-- Processing
+------------------------------------------------------------------
+SELECT embedding_process(2);
+ embedding_process 
+-------------------
+                 2
+(1 row)
+
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      3
+(1 row)
+
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 3
+(1 row)
+
+SELECT key, embedding, binary_code, status FROM docs_embeddings ORDER BY key;
+ key |     embedding     | binary_code | status 
+-----+-------------------+-------------+--------
+   1 | [1.1,0.1,0.1,0.1] | 1111        | ready
+   2 | [1.1,1.1,0.1,0.1] | 1111        | ready
+   3 | [0.1,0.1,1.1,0.1] | 1111        | ready
+   4 | [0.1,0.1,1.1,1.1] | 1111        | ready
+   5 | [0.1,1.1,0.1,0.1] | 1111        | ready
+(5 rows)
+
+SELECT * FROM embedding_status('docs');
+  model  | active | status | count 
+---------+--------+--------+-------
+ fake@v1 | t      | ready  |     5
+(1 row)
+
+------------------------------------------------------------------
+-- Triggers enqueue only on content change
+------------------------------------------------------------------
+UPDATE docs SET views = views + 1, category = 'cars' WHERE id = 3;  -- not content
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+UPDATE docs SET body = body WHERE id IN (1, 2);                     -- same content
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+UPDATE docs SET body = 'My car needs a new car battery' WHERE id = 3;
+SELECT key FROM embedding_queue;
+ key 
+-----
+ 3
+(1 row)
+
+SELECT key, status FROM docs_embeddings WHERE key = 3;
+ key | status 
+-----+--------
+   3 | stale
+(1 row)
+
+-- the stale vector stays searchable until processed
+SELECT * FROM embedding_status('docs');
+  model  | active | status | count 
+---------+--------+--------+-------
+ fake@v1 | t      | queued |     1
+ fake@v1 | t      | ready  |     4
+ fake@v1 | t      | stale  |     1
+(3 rows)
+
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 1
+(1 row)
+
+SELECT key, embedding, status FROM docs_embeddings WHERE key = 3;
+ key |     embedding     | status 
+-----+-------------------+--------
+   3 | [0.1,0.1,2.1,0.1] | ready
+(1 row)
+
+-- content changed then reverted before processing: process just re-validates
+UPDATE docs SET body = 'temporary' WHERE id = 1;
+UPDATE docs SET body = 'The cat sat on the mat' WHERE id = 1;
+SELECT key FROM embedding_queue;
+ key 
+-----
+(0 rows)
+
+SELECT embedding_process() AS embedded;
+ embedded 
+----------
+        0
+(1 row)
+
+SELECT key, status FROM docs_embeddings WHERE key = 1;
+ key | status 
+-----+--------
+   1 | ready
+(1 row)
+
+-- insert + delete before processing
+INSERT INTO docs (id, body, category) VALUES (6, 'cat and dog and car', 'misc');
+SELECT key FROM embedding_queue;
+ key 
+-----
+ 6
+(1 row)
+
+DELETE FROM docs WHERE id = 6;
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+-- delete removes stored vectors
+INSERT INTO docs (id, body, category) VALUES (7, 'bike bike bike', 'vehicles');
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 1
+(1 row)
+
+DELETE FROM docs WHERE id = 7;
+SELECT count(*) FROM docs_embeddings WHERE key = 7;
+ count 
+-------
+     0
+(1 row)
+
+-- key change: old key forgotten, new key enqueued
+UPDATE docs SET id = 50 WHERE id = 5;
+SELECT key FROM embedding_queue;
+ key 
+-----
+ 50
+(1 row)
+
+SELECT count(*) FROM docs_embeddings WHERE key = 5;
+ count 
+-------
+     0
+(1 row)
+
+UPDATE docs SET id = 5 WHERE id = 50;
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 1
+(1 row)
+
+-- NULL content: nothing to embed
+INSERT INTO docs (id, body) VALUES (8, NULL);
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+DELETE FROM docs WHERE id = 8;
+------------------------------------------------------------------
+-- Dimension enforcement
+------------------------------------------------------------------
+INSERT INTO docs_embeddings (key, model_id, embedding, content_hash)
+VALUES (1, 1, '[1,2,3]', '\x00');
+ERROR:  embedding has 3 dimensions but model fake@v1 requires 4
+CONTEXT:  PL/pgSQL function public.embedding__store_check() line 12 at RAISE
+UPDATE docs_embeddings SET embedding = '[1,2]' WHERE key = 1 AND model_id = 1;
+ERROR:  embedding has 2 dimensions but model fake@v1 requires 4
+CONTEXT:  PL/pgSQL function public.embedding__store_check() line 12 at RAISE
+SELECT embedding_search('docs', '[1,0,0]');                          -- query dims
+ERROR:  query vector has 3 dimensions but model fake@v1 requires 4
+CONTEXT:  PL/pgSQL function embedding__check_query(embedding_model,vector) line 7 at RAISE
+SQL statement "SELECT public.embedding__check_query(m, query)"
+PL/pgSQL function embedding_search(regclass,vector,integer,text,text) line 7 at PERFORM
+------------------------------------------------------------------
+-- Search (active model fake@v1, cosine)
+------------------------------------------------------------------
+-- cos dist to [1,0,0,0]: doc1 [1.1,.1,.1,.1] -> 1 - 1.1/sqrt(1.24) = 0.0122
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search('docs', '[1,0,0,0]', 5);
+ key | distance 
+-----+----------
+ 1   |   0.0122
+ 2   |   0.2958
+ 5   |   0.9102
+ 4   |   0.9360
+ 3   |   0.9525
+(5 rows)
+
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search_text('docs', 'dog', 3);
+ key | distance 
+-----+----------
+ 5   |   0.0000
+ 2   |   0.2296
+ 4   |   0.8045
+(3 rows)
+
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search('docs', fake_embed_v1('car'), 2, 'fake', 'v1');
+ key | distance 
+-----+----------
+ 3   |   0.0027
+ 4   |   0.2296
+(2 rows)
+
+------------------------------------------------------------------
+-- Hybrid search (RRF)
+------------------------------------------------------------------
+-- cosine ranks for fake_embed_v1('cat') = [1.1,.1,.1,.1]: docs 1,2,4,5,3
+-- (cos sim .9839/.7042/.1955/.1935/.1449); text ranks for 'dog': docs 2,5
+-- doc2 = 1/(60+2)+1/(60+1) = 0.032522, doc5 = 1/64+1/62 = 0.031754,
+-- doc1 = 1/61 = 0.016393, doc4 = 1/63 = 0.015873, doc3 = 1/65 = 0.015385
+SELECT key, round(score::numeric, 6) AS score, vector_rank, text_rank
+  FROM embedding_hybrid_search('docs', fake_embed_v1('cat'), 'dog', 5);
+ key |  score   | vector_rank | text_rank 
+-----+----------+-------------+-----------
+ 2   | 0.032522 |           2 |         1
+ 5   | 0.031754 |           4 |         2
+ 1   | 0.016393 |           1 |          
+ 4   | 0.015873 |           3 |          
+ 3   | 0.015385 |           5 |          
+(5 rows)
+
+-- relational filter: only pets (1,2,5)
+-- doc2 = 1/62+1/61, doc5 = 1/63+1/62 = 0.032002, doc1 = 1/61
+SELECT key, round(score::numeric, 6) AS score, vector_rank, text_rank
+  FROM embedding_hybrid_search('docs', fake_embed_v1('cat'), 'dog', 5,
+                               filter => $$category = 'pets'$$);
+ key |  score   | vector_rank | text_rank 
+-----+----------+-------------+-----------
+ 2   | 0.032522 |           2 |         1
+ 5   | 0.032002 |           3 |         2
+ 1   | 0.016393 |           1 |          
+(3 rows)
+
+-- text only / vector only / explicit text column / rrf_k
+SELECT key, vector_rank, text_rank
+  FROM embedding_hybrid_search('docs', NULL, 'car', 5, text_column => 'body');
+ key | vector_rank | text_rank 
+-----+-------------+-----------
+ 3   |             |         1
+ 4   |             |         2
+(2 rows)
+
+-- rrf_k = 0: doc3 = text #1 + vector #5 -> 1/1 + 1/5 = 1.2,
+-- doc4 = vector #1 -> 1/1, doc2 = vector #2 -> 1/2
+SELECT key, round(score::numeric, 6) AS score, vector_rank, text_rank
+  FROM embedding_hybrid_search('docs', fake_embed_v1('bike'), 'battery', 3, rrf_k => 0);
+ key |  score   | vector_rank | text_rank 
+-----+----------+-------------+-----------
+ 3   | 1.200000 |           5 |         1
+ 4   | 1.000000 |           1 |          
+ 2   | 0.500000 |           2 |          
+(3 rows)
+
+SELECT * FROM embedding_hybrid_search('docs', NULL, 'dog', filter => 'true; DROP TABLE docs');
+ERROR:  filter must be a single SQL expression (no ";" or comments)
+CONTEXT:  PL/pgSQL function embedding__check_fragment(text,text) line 7 at RAISE
+SQL statement "SELECT public.embedding__check_fragment(filter, 'filter')"
+PL/pgSQL function embedding_hybrid_search(regclass,vector,text,integer,text,text,integer,regconfig) line 23 at PERFORM
+SELECT * FROM embedding_hybrid_search('docs', NULL, 'dog', text_column => 'nope');
+ERROR:  column "nope" does not exist in docs
+CONTEXT:  PL/pgSQL function embedding_hybrid_search(regclass,vector,text,integer,text,text,integer,regconfig) line 35 at RAISE
+------------------------------------------------------------------
+-- Quantization
+------------------------------------------------------------------
+SELECT embedding_binary_quantize('[0.5,-1,0,2]');
+ embedding_binary_quantize 
+---------------------------
+ 1001
+(1 row)
+
+SELECT embedding_hamming(B'1001', B'0011');
+ embedding_hamming 
+-------------------
+                 2
+(1 row)
+
+SELECT embedding_hamming(embedding_binary_quantize('[1,1,1,1]'),
+                         embedding_binary_quantize('[-1,1,-1,1]'));
+ embedding_hamming 
+-------------------
+                 2
+(1 row)
+
+SELECT embedding_int8_quantize('[0.5,-1,0,2]');
+ embedding_int8_quantize 
+-------------------------
+ {32,-64,0,127}
+(1 row)
+
+SELECT embedding_int8_quantize('[0.5,-1,0,2]', 10);
+ embedding_int8_quantize 
+-------------------------
+ {5,-10,0,20}
+(1 row)
+
+SELECT embedding_int8_quantize('[0.5,-100,0,2]', 10);
+ embedding_int8_quantize 
+-------------------------
+ {5,-127,0,20}
+(1 row)
+
+SELECT embedding_int8_quantize(NULL);
+ embedding_int8_quantize 
+-------------------------
+ 
+(1 row)
+
+SELECT embedding_int8_dequantize('{5,-10,0,20}', 10);
+ embedding_int8_dequantize 
+---------------------------
+ [0.5,-1,0,2]
+(1 row)
+
+SELECT embedding_int8_quantize('[1,2]', 0);
+ERROR:  embedding_int8_quantize: scale must be positive, got 0
+CONTEXT:  PL/pgSQL function embedding_int8_quantize(vector,double precision) line 15 at RAISE
+-- two-stage search on an externally embedded (manual) model: vectors are
+-- written straight into the store, nothing is queued
+CREATE TABLE pts (id int PRIMARY KEY, label text);
+INSERT INTO pts VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
+SELECT embedding_track('pts', 'id', 'label', 'manual', '1', 'none');
+ embedding_track 
+-----------------
+ pts_embeddings
+(1 row)
+
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+INSERT INTO pts_embeddings (key, model_id, embedding, content_hash)
+SELECT id, 4, v::vector, embedding__hash(label)
+  FROM pts JOIN (VALUES (1, '[1,0.1]'), (2, '[0.9,-0.2]'), (3, '[-1,0.5]'),
+                        (4, '[0.2,1]'), (5, '[-0.3,-1]')) AS x(i, v) ON x.i = pts.id;
+SELECT key, binary_code FROM pts_embeddings ORDER BY key;
+ key | binary_code 
+-----+-------------
+   1 | 11
+   2 | 10
+   3 | 01
+   4 | 11
+   5 | 00
+(5 rows)
+
+-- query [1,0.05] -> code 11; hamming 1:0 2:1 3:1 4:0 5:2
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search('pts', '[1,0.05]', 3);
+ key | distance 
+-----+----------
+ 1   |   0.0012
+ 2   |   0.0359
+ 4   |   0.7552
+(3 rows)
+
+SELECT key, round(distance::numeric, 4) AS distance, hamming
+  FROM embedding_search_rerank('pts', '[1,0.05]', 3, 3);
+ key | distance | hamming 
+-----+----------+---------
+ 1   |   0.0012 |       0
+ 2   |   0.0359 |       1
+ 4   |   0.7552 |       0
+(3 rows)
+
+-- too few candidates: prefilter keeps {1,4} only, so 2 is missed
+SELECT key, round(distance::numeric, 4) AS distance, hamming
+  FROM embedding_search_rerank('pts', '[1,0.05]', 2, 1);
+ key | distance | hamming 
+-----+----------+---------
+ 1   |   0.0012 |       0
+ 4   |   0.7552 |       0
+(2 rows)
+
+-- content change marks the manual vector stale (not queued)
+UPDATE pts SET label = 'z' WHERE id = 2;
+SELECT key, status FROM pts_embeddings WHERE key = 2;
+ key | status 
+-----+--------
+   2 | stale
+(1 row)
+
+SELECT * FROM embedding_status('pts');
+  model   | active | status | count 
+----------+--------+--------+-------
+ manual@1 | t      | ready  |     4
+ manual@1 | t      | stale  |     1
+(2 rows)
+
+SELECT embedding_untrack('pts');
+ embedding_untrack 
+-------------------
+ 
+(1 row)
+
+------------------------------------------------------------------
+-- Re-embed with fake@v2 side by side, then promote
+------------------------------------------------------------------
+SELECT embedding_reembed('docs', 'fake', 'v1', 'fake', 'v2') AS enqueued;
+ enqueued 
+----------
+        5
+(1 row)
+
+SELECT * FROM embedding_status('docs');
+  model  | active | status | count 
+---------+--------+--------+-------
+ fake@v1 | t      | ready  |     5
+ fake@v2 | f      | queued |     5
+(2 rows)
+
+-- search still uses v1 (active); v2 has nothing yet
+SELECT key FROM embedding_search('docs', fake_embed_v1('cat'), 1);
+ key 
+-----
+ 1
+(1 row)
+
+SELECT count(*) FROM embedding_search('docs', '[1,0,1]', 10, 'fake', 'v2');
+ count 
+-------
+     0
+(1 row)
+
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 5
+(1 row)
+
+SELECT key, model_id, embedding FROM docs_embeddings WHERE model_id = 2 ORDER BY key;
+ key | model_id | embedding 
+-----+----------+-----------
+   1 |        2 | [1,0,1]
+   2 |        2 | [2,0,1]
+   3 |        2 | [0,2,1]
+   4 |        2 | [0,2,1]
+   5 |        2 | [1,0,1]
+(5 rows)
+
+SELECT embedding_promote('docs', 'fake@v2');
+ embedding_promote 
+-------------------
+ 
+(1 row)
+
+SELECT * FROM embedding_status('docs');
+  model  | active | status | count 
+---------+--------+--------+-------
+ fake@v1 | f      | ready  |     5
+ fake@v2 | t      | ready  |     5
+(2 rows)
+
+-- now l2 over [animals, vehicles, 1]; doc3 = [0,2,1] is closest to [0,2,1]
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search('docs', '[0,2,1]', 3);
+ key | distance 
+-----+----------
+ 3   |   0.0000
+ 4   |   0.0000
+ 1   |   2.2361
+(3 rows)
+
+SELECT key, round(distance::numeric, 4) AS distance
+  FROM embedding_search_text('docs', 'cat dog', 2);
+ key | distance 
+-----+----------
+ 2   |   0.0000
+ 1   |   1.0000
+(2 rows)
+
+-- old version still queryable explicitly
+SELECT key FROM embedding_search('docs', fake_embed_v1('cat'), 1, 'fake@v1');
+ key 
+-----
+ 1
+(1 row)
+
+-- both models maintained by the trigger
+UPDATE docs SET body = 'The cat sat on the dog' WHERE id = 1;
+SELECT model_id, key FROM embedding_queue ORDER BY model_id;
+ model_id | key 
+----------+-----
+        1 | 1
+        2 | 1
+(2 rows)
+
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 2
+(1 row)
+
+-- partial ANN index per model
+SELECT indexname, indexdef FROM pg_indexes
+ WHERE tablename = 'docs_embeddings' AND indexdef LIKE '%hnsw%' ORDER BY indexname;
+          indexname          |                                                                    indexdef                                                                     
+-----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------
+ docs_embeddings_m1_hnsw_idx | CREATE INDEX docs_embeddings_m1_hnsw_idx ON public.docs_embeddings USING hnsw (((embedding)::vector(4)) vector_cosine_ops) WHERE (model_id = 1)
+ docs_embeddings_m2_hnsw_idx | CREATE INDEX docs_embeddings_m2_hnsw_idx ON public.docs_embeddings USING hnsw (((embedding)::vector(3))) WHERE (model_id = 2)
+(2 rows)
+
+------------------------------------------------------------------
+-- Failures are recorded, retire / untrack
+------------------------------------------------------------------
+SELECT embedding_reembed('docs', 'fake', 'v2', 'broken', '1') AS enqueued;
+ enqueued 
+----------
+        5
+(1 row)
+
+SELECT embedding_process();
+ embedding_process 
+-------------------
+                 0
+(1 row)
+
+SELECT key, attempts, last_error FROM embedding_queue ORDER BY key LIMIT 2;
+ key | attempts |                        last_error                        
+-----+----------+----------------------------------------------------------
+ 1   |        1 | embedding has 3 dimensions but model broken@1 requires 4
+ 2   |        1 | embedding has 3 dimensions but model broken@1 requires 4
+(2 rows)
+
+SELECT embedding_promote('docs', 'manual@1');                          -- not tracked
+ERROR:  model is not tracked for docs
+HINT:  Use embedding_reembed() to start embedding with it.
+CONTEXT:  PL/pgSQL function embedding_promote(regclass,text,text) line 9 at RAISE
+SELECT embedding_model_retire('fake', 'v2');                           -- active
+ERROR:  model is the active model of docs
+HINT:  Promote another model with embedding_promote() first.
+CONTEXT:  PL/pgSQL function embedding_model_retire(text,text) line 9 at RAISE
+SELECT embedding_model_retire('broken@1');
+ embedding_model_retire 
+------------------------
+ 
+(1 row)
+
+SELECT count(*) AS queued FROM embedding_queue;
+ queued 
+--------
+      0
+(1 row)
+
+SELECT embedding_reembed('docs', 'fake', 'v2', 'broken', '1');          -- retired
+ERROR:  embedding model broken@1 is retired
+CONTEXT:  PL/pgSQL function embedding_reembed(regclass,text,text,text,text) line 14 at RAISE
+SELECT embedding_untrack('docs', 'broken', '1');
+ embedding_untrack 
+-------------------
+ 
+(1 row)
+
+SELECT embedding_untrack('docs', 'fake', 'v1');
+ embedding_untrack 
+-------------------
+ 
+(1 row)
+
+SELECT * FROM embedding_status('docs');
+  model  | active | status | count 
+---------+--------+--------+-------
+ fake@v2 | t      | ready  |     5
+(1 row)
+
+SELECT indexname FROM pg_indexes WHERE tablename = 'docs_embeddings' ORDER BY indexname;
+          indexname          
+-----------------------------
+ docs_embeddings_m2_hnsw_idx
+ docs_embeddings_model_idx
+ docs_embeddings_pkey
+(3 rows)
+
+-- TRUNCATE clears the store
+TRUNCATE docs;
+SELECT count(*) FROM docs_embeddings;
+ count 
+-------
+     0
+(1 row)
+
+-- untrack whole source
+SELECT embedding_untrack('docs');
+ embedding_untrack 
+-------------------
+ 
+(1 row)
+
+SELECT to_regclass('docs_embeddings');
+ to_regclass 
+-------------
+ 
+(1 row)
+
+SELECT tgname FROM pg_trigger WHERE tgrelid = 'docs'::regclass;
+ tgname 
+--------
+(0 rows)
+
+SELECT embedding_status('docs');
+ERROR:  table public.docs is not tracked by pg_embeddings
+HINT:  Call embedding_track() first.
+CONTEXT:  PL/pgSQL function public.embedding__source(regclass) line 7 at RAISE
+PL/pgSQL function embedding_status(regclass) line 3 during statement block local variable initialization
+DROP EXTENSION pg_embeddings;

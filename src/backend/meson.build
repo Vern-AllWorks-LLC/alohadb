@@ -71,14 +71,14 @@ alohadb_lib = static_library('alohadb_lib',
 )
 
 if cc.get_id() == 'msvc'
-  alohadb_def = custom_target('alohadb.def',
+  alohadb_def = custom_target('postgres.def',
     command: [perl, files('../tools/msvc_gendef.pl'),
               '--arch', host_cpu,
               '--tempdir', '@PRIVATE_DIR@',
               '--deffile', '@OUTPUT@',
               '@INPUT@'],
     input: [alohadb_lib, common_srv, pgport_srv],
-    output: 'alohadb.def',
+    output: 'postgres.def',
     depends: [alohadb_lib, common_srv, pgport_srv],
     install: false,
     build_by_default: false,
@@ -121,11 +121,11 @@ endif
 
 if host_system == 'windows'
   post_export_backend_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'alohadb',
+    '--NAME', 'postgres',
     '--FILEDESC', 'AlohaDB Server',])
 endif
 
-alohadb_server = executable('alohadb',
+alohadb_server = executable('postgres',
   backend_input,
   sources: post_export_backend_sources,
   objects: backend_objs,
@@ -133,7 +133,7 @@ alohadb_server = executable('alohadb',
   link_with: backend_link_with,
   link_depends: backend_link_depends,
   export_dynamic: true,
-  implib: 'alohadb',
+  implib: 'postgres',
   dependencies: backend_build_deps,
   kwargs: default_bin_args,
 )
@@ -152,7 +152,7 @@ if mod_link_args_fmt.length() > 0
   # only add the dependency when necessary.
   pg_mod_link_depend += alohadb_server
 
-  name = mod_link_with_name.format('alohadb')
+  name = mod_link_with_name.format('postgres')
   link_with_uninst = meson.current_build_dir() / name
   link_with_inst = '${@0@}/@1@'.format(mod_link_with_dir, name)
 

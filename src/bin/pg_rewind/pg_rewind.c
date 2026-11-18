@@ -1064,8 +1064,8 @@ getRestoreCommand(const char *argv0)
 	if (!restore_wal)
 		return;
 
-	/* find alohadb executable */
-	rc = find_other_exec(argv0, "alohadb",
+	/* find postgres executable */
+	rc = find_other_exec(argv0, "postgres",
 						 PG_BACKEND_VERSIONSTR,
 						 postgres_exec_path);
 
@@ -1134,8 +1134,8 @@ ensureCleanShutdown(const char *argv0)
 	char		exec_path[MAXPGPATH];
 	PQExpBuffer postgres_cmd;
 
-	/* locate alohadb binary */
-	if ((ret = find_other_exec(argv0, "alohadb",
+	/* locate postgres binary */
+	if ((ret = find_other_exec(argv0, "postgres",
 							   PG_BACKEND_VERSIONSTR,
 							   exec_path)) < 0)
 	{

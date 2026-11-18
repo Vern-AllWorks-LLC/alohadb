@@ -1,5 +1,0 @@
-comment = 'AlohaDB Geo - 2D geometry types, spatial predicates, and GiST bounding-box indexing'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_geo'
-schema = public
-relocatable = false

@@ -1,5 +1,0 @@
-comment = 'AlohaDB Pipeline - DAG-based ETL pipeline orchestration with dependency tracking'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_pipeline'
-schema = public
-relocatable = false

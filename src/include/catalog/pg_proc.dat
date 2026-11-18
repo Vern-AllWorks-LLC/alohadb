@@ -12726,14 +12726,14 @@
   proname => 'hnswhandler', prorettype => 'index_am_handler',
   proargtypes => 'internal', prosrc => 'hnswhandler' },
 { oid => '8873', descr => 'apply an auto-tuning configuration profile',
-  proname => 'alohadb_apply_profile', prorettype => 'void',
+  proname => 'pg_apply_profile', prorettype => 'void',
   proargtypes => 'text', provolatile => 'v',
-  prosrc => 'alohadb_apply_profile' },
+  prosrc => 'pg_apply_profile' },
 { oid => '8874', descr => 'detect hardware for auto-tuning profiles',
-  proname => 'alohadb_detect_hardware', prorows => '10', proretset => 't',
+  proname => 'pg_detect_hardware', prorows => '10', proretset => 't',
   prorettype => 'record', proargtypes => '',
   proallargtypes => '{text,text}', proargmodes => '{o,o}',
   proargnames => '{component,value}', provolatile => 'v',
-  prosrc => 'alohadb_detect_hardware' },
+  prosrc => 'pg_detect_hardware' },
 
 ]

@@ -440,7 +440,8 @@ adjust_data_dir(ClusterInfo *cluster)
 	cluster->pgconfig = pg_strdup(cluster->pgdata);
 
 	/* If there is no postgresql.conf, it can't be a config-only dir */
-	snprintf(filename, sizeof(filename), "%s/alohadb.conf", cluster->pgconfig);
+	snprintf(filename, sizeof(filename), "%s/%s", cluster->pgconfig,
+			 datadir_file(cluster->pgconfig, "postgresql.conf"));
 	if ((fp = fopen(filename, "r")) == NULL)
 		return;
 	fclose(fp);
@@ -465,8 +466,9 @@ adjust_data_dir(ClusterInfo *cluster)
 	 * so this might fail --- only works for PG 9.2+.   If this fails,
 	 * pg_upgrade will fail anyway because the data files will not be found.
 	 */
-	snprintf(cmd, sizeof(cmd), "\"%s/alohadb\" -D \"%s\" -C data_directory",
-			 cluster->bindir, cluster->pgconfig);
+	snprintf(cmd, sizeof(cmd), "\"%s/%s\" -D \"%s\" -C data_directory",
+			 cluster->bindir, cluster_bin(cluster->bindir, "postgres"),
+			 cluster->pgconfig);
 	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL ||
@@ -513,8 +515,8 @@ get_sock_dir(ClusterInfo *cluster)
 		FILE	   *fp;
 		int			lineno;
 
-		snprintf(filename, sizeof(filename), "%s/alohadb.pid",
-				 cluster->pgdata);
+		snprintf(filename, sizeof(filename), "%s/%s", cluster->pgdata,
+				 datadir_file(cluster->pgdata, "postmaster.pid"));
 		if ((fp = fopen(filename, "r")) == NULL)
 			pg_fatal("could not open file \"%s\": %m", filename);
 

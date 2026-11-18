@@ -7,11 +7,11 @@ pg_verifybackup_sources = files(
 
 if host_system == 'windows'
   pg_verifybackup_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_verifybackup',
-    '--FILEDESC', 'al_verifybackup - verify a backup against using a backup manifest'])
+    '--NAME', 'pg_verifybackup',
+    '--FILEDESC', 'pg_verifybackup - verify a backup against using a backup manifest'])
 endif
 
-pg_verifybackup = executable('al_verifybackup',
+pg_verifybackup = executable('pg_verifybackup',
   pg_verifybackup_sources,
   dependencies: [frontend_code, libpq],
   kwargs: default_bin_args,

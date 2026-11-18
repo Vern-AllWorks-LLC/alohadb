@@ -1,0 +1,5 @@
+# pg_tsfunc extension
+comment = 'Scientific time-series functions: LTTB/min-max downsampling, irregular-to-regular resampling, as-of joins, Gorilla-style value codecs'
+default_version = '1.0'
+module_pathname = '$libdir/pg_tsfunc'
+relocatable = false

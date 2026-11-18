@@ -1,4 +1,0 @@
-comment = 'AlohaDB Vectorize - analytical query acceleration'
-default_version = '1.0'
-module_pathname = '$libdir/alohadb_vectorize'
-relocatable = true

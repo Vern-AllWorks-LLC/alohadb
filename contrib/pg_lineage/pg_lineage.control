@@ -1,0 +1,5 @@
+# pg_lineage extension
+comment = 'Dataset snapshots, model-to-data lineage and zero-copy table branches over system-versioned tables'
+default_version = '1.0'
+relocatable = false
+requires = 'plpgsql'

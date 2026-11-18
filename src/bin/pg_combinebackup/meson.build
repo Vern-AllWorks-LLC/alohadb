@@ -11,11 +11,11 @@ pg_combinebackup_sources = files(
 
 if host_system == 'windows'
   pg_combinebackup_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
-    '--NAME', 'al_combinebackup',
-    '--FILEDESC', 'al_combinebackup - combine incremental backups',])
+    '--NAME', 'pg_combinebackup',
+    '--FILEDESC', 'pg_combinebackup - combine incremental backups',])
 endif
 
-pg_combinebackup = executable('al_combinebackup',
+pg_combinebackup = executable('pg_combinebackup',
   pg_combinebackup_sources,
   dependencies: [frontend_code],
   kwargs: default_bin_args,
