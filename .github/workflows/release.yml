@@ -17,11 +17,12 @@ on:
 permissions:
   contents: write
 
-# Python runtime bundled into the Linux/macOS packages for PL/Python and
-# pg_python (relocatable CPython builds from python-build-standalone).
+# Python runtime bundled into every package for PL/Python and pg_python:
+# Xue (https://github.com/Vern-AllWorks-LLC/xue), standard CPython 3.15 build
+# (not the free-threaded 3.15t one).  Archive checksums are pinned per
+# platform in the matrix (xuesha).
 env:
-  PBS_RELEASE: '20261026'
-  PBS_PYTHON: '3.12.16'
+  XUE_VERSION: 'v1.2.0'
 
 jobs:
   build:
@@ -34,18 +35,19 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: linux-x86_64
-            pytriple: x86_64-unknown-linux-gnu
+            xuesha: 090f76a9643c94de25f7dc0e4a67342ac94e107161fe59ee6c0fe00c37a50a58
           - os: ubuntu-22.04-arm
             platform: linux-aarch64
-            pytriple: aarch64-unknown-linux-gnu
+            xuesha: fdad7472d4c198e4f65983a542e203b40fda07baa78b64b93d28110661c03c07
           - os: macos-latest
             platform: macos-arm64
-            pytriple: aarch64-apple-darwin
+            xuesha: f26f986caa04601e4b5610b827fa522adbb177236812667fb79dfc3004f7c50d
           - os: macos-15-intel
             platform: macos-x86_64
-            pytriple: x86_64-apple-darwin
+            xuesha: d6580680384648e52872040e9f903fb7345a53c7a3cf88d7fe79b9c95991490a
           - os: windows-latest
             platform: windows-x86_64
+            xuesha: c3773baa8f0572520506e6ddc4a9595387aaf4e5158eb868e0bdf7ddeb09a1a4
 
     steps:
       # Keep LF line endings on Windows: the Perl code generators
@@ -105,25 +107,25 @@ jobs:
             zip
             unzip
 
-      # ---- Bundled Python (Linux / macOS) -----------------------------------
-      - name: Fetch bundled Python (Linux / macOS)
-        if: runner.os != 'Windows'
+      # ---- Bundled Python: Xue ---------------------------------------------
+      - name: Fetch Xue runtime
+        shell: bash
         run: |
           set -euo pipefail
-          F="cpython-${PBS_PYTHON}+${PBS_RELEASE}-${{ matrix.pytriple }}-install_only_stripped.tar.gz"
-          U="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}"
+          case "${{ runner.os }}" in Windows) EXT=zip ;; *) EXT=tar.gz ;; esac
+          D="xue-${XUE_VERSION}-${{ matrix.platform }}"
+          F="$D.$EXT"
           cd "$RUNNER_TEMP"
-          curl -fsSLO "$U/$F"
-          curl -fsSL "$U/SHA256SUMS" -o SHA256SUMS
-          grep " $F\$" SHA256SUMS | shasum -a 256 -c -
-          tar -xzf "$F"
+          curl -fsSLO "https://github.com/Vern-AllWorks-LLC/xue/releases/download/${XUE_VERSION}/$F"
+          if command -v sha256sum >/dev/null; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
+          echo "${{ matrix.xuesha }}  $F" | $SUM -c -
+          if [ "$EXT" = zip ]; then 7z x -bd -y "$F" > /dev/null; else tar -xzf "$F"; fi
+          mv "$D" python
           PYROOT="$RUNNER_TEMP/python"
-          # Point the pkg-config files at the unpacked location (they say /install).
-          for pc in "$PYROOT"/lib/pkgconfig/*.pc; do
-            sed -i.bak "s|^prefix=.*|prefix=$PYROOT|" "$pc" && rm -f "$pc.bak"
-          done
-          "$PYROOT/bin/python3" -VV
-          ls "$PYROOT/lib" | grep -i libpython
+          if [ "$EXT" = zip ]; then PYEXE="$PYROOT/python.exe"; else PYEXE="$PYROOT/bin/python3"; fi
+          "$PYEXE" -VV
+          # Standard (GIL) 3.15 build with the xue package.
+          "$PYEXE" -c 'import sys, xue; assert sys.version_info[:2] == (3, 15) and sys._is_gil_enabled()'
           echo "PYROOT=$PYROOT" >> "$GITHUB_ENV"
 
       # ---- Build: Linux / macOS ---------------------------------------------
@@ -269,11 +271,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
+          # PL/Python is built against Xue's (MSVC) CPython: meson's python
+          # module links libs/python315.lib and defines MS_WIN64 for gcc.
           meson setup builddir \
             --prefix=/c/alohadb \
             -Drpath=true \
             -Dssl=openssl \
-            -Dplpython=enabled
+            -Dplpython=enabled \
+            -DPYTHON="$(cygpath -m "$PYROOT")/python.exe"
 
       - name: Compile (Windows)
         if: runner.os == 'Windows'
@@ -292,19 +297,20 @@ jobs:
           mkdir -p dist
           cp -r "$ROOT" "dist/$NAME"
           P="dist/$NAME"
-          # Python runtime for PL/Python: the MinGW standard library in
-          # <install>/python/lib/pythonX.Y (found by plpy_main.c); its DLLs go to bin/.
-          PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-          mkdir -p "$P/python/lib"
-          cp -r "/mingw64/lib/python$PYV" "$P/python/lib/"
-          PL="$P/python/lib/python$PYV"
-          rm -rf "$PL"/test "$PL"/idlelib "$PL"/tkinter "$PL"/turtledemo "$PL"/lib-dynload/_tkinter*
-          find "$PL/site-packages" -mindepth 1 -maxdepth 1 ! -name README.txt -exec rm -rf {} +
-          find "$PL" -name __pycache__ -type d -prune -exec rm -rf {} +
+          # Python runtime for PL/Python: Xue in <install>/python (plpy_main.c
+          # sets PYTHONHOME to it).  python315.dll and the MSVC runtime it needs
+          # go to bin/, where Windows finds plpython3.dll's dependencies.
+          X="$(cygpath -u "$PYROOT")"
+          cp -r "$X" "$P/python"
+          rm -rf "$P/python/libs" "$P/python/include" "$P/python/python3t.dll" \
+                 "$P/python/Lib/test" "$P/python/Lib/idlelib" "$P/python/Lib/turtledemo"
+          find "$P/python" -name __pycache__ -type d -prune -exec rm -rf {} +
+          cp "$X"/python315.dll "$X"/python3.dll "$X"/vcruntime140*.dll "$P/bin/"
           # Ship the MinGW runtime DLLs next to the executables: walk the import
           # tables (objdump; MSYS2 ldd cannot read some .pyd files) until no
           # new /mingw64/bin DLL turns up.
-          queue=$(find "$P" -name '*.exe' -o -name '*.dll' -o -name '*.pyd')
+          # (The Python runtime in python/ is self-contained and is not scanned.)
+          queue=$(find "$P/bin" "$P/lib" -name '*.exe' -o -name '*.dll')
           while [ -n "$queue" ]; do
             next=""
             for f in $queue; do
